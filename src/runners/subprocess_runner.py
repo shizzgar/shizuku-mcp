@@ -69,6 +69,14 @@ async def run_command(
             stdout = stdout_bytes.decode(errors='replace').strip()
             stderr = stderr_bytes.decode(errors='replace').strip()
             
+            logger.info(f"DONE: {cmd_str} (RC: {rc})")
+            if stdout:
+                log_out = stdout[:1000] + "..." if len(stdout) > 1000 else stdout
+                logger.info(f"STDOUT:\n{log_out}")
+            if stderr:
+                log_err = stderr[:1000] + "..." if len(stderr) > 1000 else stderr
+                logger.warning(f"STDERR:\n{log_err}")
+            
             # Применяем умную обрезку
             final_output = handle_large_output(stdout, stderr, args[0].split("/")[-1])
             
