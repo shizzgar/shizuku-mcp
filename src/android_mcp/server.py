@@ -5,6 +5,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
+from starlette.middleware.base import BaseHTTPMiddleware
 from mcp.server.fastmcp import FastMCP
 
 from src.config import config
@@ -116,37 +117,33 @@ async def list_artifacts_tool() -> dict:
     """Lists saved artifacts (screenshots, recordings)."""
     return {"ok": True, "data": list_artifacts()}
 
+# Security Middleware Class
+class SecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Origin check
+        origin = request.headers.get("origin")
+        if origin and not (origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")):
+            logger.warning(f"Request from unusual origin: {origin}")
+
+        # Auth token check
+        if config.auth_token:
+            auth_header = request.headers.get("authorization")
+            if not auth_header or auth_header != f"Bearer {config.auth_token}":
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        
+        return await call_next(request)
+
 # Starlette App Setup
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    # Setup directories
     config.setup_dirs()
-    # Run MCP session manager
     async with mcp._app.session_manager.run():
         yield
 
 app = Starlette(lifespan=lifespan)
-
-# Security Middleware
-@app.middleware("http")
-async def security_middleware(request: Request, call_next):
-    # Origin check (optional but recommended in PLAN)
-    origin = request.headers.get("origin")
-    if origin and not (origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")):
-        # In a real Termux scenario, we might want to be strict or allow certain apps.
-        # For now, let's just log it if it's unusual.
-        logger.warning(f"Request from unusual origin: {origin}")
-
-    # Auth token check
-    if config.auth_token:
-        auth_header = request.headers.get("authorization")
-        if not auth_header or auth_header != f"Bearer {config.auth_token}":
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    return await call_next(request)
+app.add_middleware(SecurityMiddleware)
 
 # Mount the MCP server
-# Note: FastMCP provides .streamable_http_app() which is a Starlette app
 app.mount(config.endpoint, mcp.streamable_http_app())
 
 def main():
