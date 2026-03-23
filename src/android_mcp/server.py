@@ -16,44 +16,36 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- THE UNIFIED ULTIMATE SHELL (KNOWLEDGE EMBEDDED) ---
+# --- THE UNIFIED ULTIMATE SHELL (WITH FULL COMMAND REFERENCE) ---
 
 @mcp.tool()
 async def shell(command: str) -> dict:
     """
-    ULTIMATE ANDROID BASH SHELL. Your primary and only tool for everything.
-    CONTEXT: Running inside Termux (Linux environment on Android).
+    ULTIMATE ANDROID BASH SHELL. Your primary tool for EVERYTHING.
+    CONTEXT: Running inside Termux (Linux) with Shizuku (ADB) support.
     
-    1. THE SHIZUKU POWER (ADB ACCESS):
-       - To run system-level commands (pm, am, settings, content query, logcat, dumpsys), 
-         ALWAYS use: 'rish -c "command"'.
-       - NO 'shizuku' binary exists. 'rish -c' is your interface to ADB user permissions.
+    1. THE RISH-PIPE PATTERN:
+       - Use 'rish -c "command"' for system actions (ADB permissions).
+       - ALWAYS pipe to Termux tools: 'rish -c "pm list packages" | grep google'
     
-    2. THE RISH-PIPE PATTERN (DATA ANALYSIS):
-       - ALWAYS pipe high-privilege data to Termux tools for processing.
-       - Example: 'rish -c "dumpsys battery" | grep level'
-       - Example: 'rish -c "pm list packages" | grep google | wc -l'
-       - You have: jq, sqlite3, python, grep, sed, awk, curl.
+    2. TERMUX:API REFERENCE (Hardware & System):
+       - UI: termux-toast, termux-notification, termux-dialog (input/confirm), termux-clipboard-get/set
+       - HARDWARE: termux-battery-status, termux-torch (on/off), termux-vibrate, termux-brightness
+       - CONNECTIVITY: termux-wifi-connectioninfo, termux-wifi-scaninfo, termux-location (GPS)
+       - TELEPHONY: termux-sms-list, termux-sms-send -n <num> -m <txt>, termux-contact-list, termux-call-log, termux-telephony-deviceinfo
+       - MULTIMEDIA: termux-camera-photo <file>, termux-microphone-record -d <sec> <file>, termux-media-player play <file>
+       - STORAGE (SAF): termux-saf-ls, termux-saf-read, termux-saf-write (Access SD Card/Downloads)
     
-    3. CONTENT PROVIDERS (CALENDAR, SMS, CONTACTS):
-       - Use 'content query --uri <URI>'.
-       - IMPORTANT: Names vary. First run: 'rish -c "content query --uri <URI> --limit 1"' to see columns.
-       - CALENDAR: URI='content://com.android.calendar/events'. 
-         Use 'dtstart', 'dtend', 'title'. 'begin/end' columns often FAIL.
-       - RECURRING EVENTS: 'dtstart' filtering misses birthdays. 
-         STRATEGY: Query 'rrule IS NOT NULL' and expand instances via Python in this shell.
+    3. ESSENTIAL UTILITIES:
+       - Use 'jq' for JSON parsing, 'sqlite3' for databases, 'python' for complex logic.
+       - Use 'termux-open <file>' to launch files in Android apps.
     
-    4. FILESYSTEM & SHARED STORAGE:
-       - HOME ('~/'): Private. Other Android apps CANNOT see files here.
-       - SHARED: '/sdcard/Documents/MCP/'. USE THIS for files (Markdown, PDF, etc.) 
-         intended to be opened by other apps.
-       - OPENING FILES: Use 'termux-open /sdcard/Documents/MCP/file.ext'.
+    4. FILESYSTEM RULES:
+       - Files in '~/ ' are PRIVATE. 
+       - For sharing with other apps, ALWAYS use: '/sdcard/Documents/MCP/'.
     
-    5. HARDWARE (Termux:API):
-       - Run directly: battery-status, location, toast, notification, clipboard-get/set, etc.
-    
-    6. LARGE OUTPUT:
-       - Output > 30k chars is truncated and saved to '~/artifacts/'. Use 'grep' to filter!
+    5. PERFORMANCE:
+       - Large output (>30k chars) is truncated and saved to '~/artifacts/'.
     """
     return await shell_tools.execute_android_shell(command=command)
 
@@ -61,16 +53,16 @@ async def shell(command: str) -> dict:
 
 @mcp.tool()
 async def doctor() -> dict:
-    """Provides system diagnostics, Shizuku status, and Termux:API availability."""
+    """Check health of Shizuku and Termux:API."""
     from src.doctor import get_system_info
     return {"ok": True, "data": await get_system_info()}
 
 @mcp.tool()
 async def list_artifacts() -> dict:
-    """Lists saved files (logs, screenshots) in the artifacts directory (~/artifacts)."""
+    """List files in the artifacts directory (~/artifacts)."""
     return {"ok": True, "data": list_artifacts()}
 
-# Middleware (Auth)
+# Middleware
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -93,7 +85,7 @@ def main():
     except: pass
 
     print("\n" + "="*50)
-    print("READY! Ultimate Shell with Embedded Wisdom is active.")
+    print("READY! The 'Learned' Android MCP Server is active.")
     print("="*50 + "\n")
     
     config.setup_dirs()
