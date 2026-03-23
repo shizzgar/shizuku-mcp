@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+import os
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
@@ -15,48 +16,52 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
+# --- KNOWLEDGE RESOURCES ---
+
+@mcp.resource("knowledge://android/pitfalls")
+def get_android_pitfalls() -> str:
+    """Critical technical notes about Android Content Providers and Shell limitations."""
+    return """
+    1. CALENDAR RECURRING EVENTS:
+       Standard 'content query' on 'content://com.android.calendar/events' fails to return recurring instances.
+       FIX: Fetch events with 'rrule IS NOT NULL' and expand them manually via Python in termux_shell.
+    
+    2. PERMISSION HANGS:
+       On Android 15+, some background commands may timeout if the app (like Termux:API) is throttled.
+       FIX: Ensure 'Unrestricted' battery mode and 'Display over other apps' is allowed.
+    
+    3. COLUMN NAMES:
+       Content Provider columns vary by Android version. If a query fails, fetch all columns first to verify.
+    """
+
 # --- TWO POWERFUL SHELL TOOLS ---
 
 @mcp.tool()
 async def termux_shell(command: str) -> dict:
     """
-    [TERMUX USER CONTEXT] - Direct access to the Termux environment.
-    Use this for file management, package management, and hardware interaction via Termux:API.
+    [TERMUX USER CONTEXT] - Full Bash shell inside Termux.
+    Use this for: 
+    - Complex data processing (Python, jq, sed, awk).
+    - Managing local files (~/) and packages (pkg/apt).
+    - Hardware access via 'termux-*' commands.
     
-    KEY CAPABILITIES:
-    - Filesystem: Access to ~/ (home), pipes (|), redirects (>), and complex bash scripts.
-    - Packages: Use 'pkg install <name>' or 'apt' to add new tools. 
-    - Installed Tools: python, git, ffmpeg, curl, etc.
-    - Hardware (Termux:API): Use 'termux-*' commands for hardware access:
-        * battery-status, wifi-connectioninfo, location (GPS)
-        * toast, notification, dialog, vibration, torch
-        * clipboard-get, clipboard-set
-        * camera-photo, microphone-record, media-player
-        * sms-list, sms-send, call-log, contact-list
-        * saf-ls, saf-read, saf-write (Access to SD Card/Downloads without root)
-    
-    ENVIRONMENT: Full bash shell with correct PATH, HOME, and PREFIX.
+    EXPERT TIP: If a system_shell command (like calendar query) returns raw data that needs 
+    complex expansion (like RRULEs), pipe the output to a Python script here.
     """
     return await shell_tools.termux_shell(command=command)
 
 @mcp.tool()
 async def system_shell(command: str) -> dict:
     """
-    [SYSTEM ADB CONTEXT] - High-privilege access via Shizuku (rish).
-    Use this for Android OS management, app control, and deep system diagnostics.
+    [SYSTEM ADB CONTEXT] - High-privilege access via Shizuku.
+    Use this for:
+    - App management (am/pm), Settings, and System Diagnostics.
+    - Content Provider queries (content query --uri ...).
     
-    KEY CAPABILITIES:
-    - App Management: 
-        * 'pm list packages' (list apps)
-        * 'am start -n <comp>' (launch any activity)
-        * 'am force-stop <pkg>' (kill any app)
-        * 'pm dump <pkg>' (get app details)
-    - System Settings: 'settings get/put global/secure/system <key> <value>'
-    - Screen Control: 'screencap -p /sdcard/s.png', 'screenrecord --time-limit 10 /sdcard/v.mp4'
-    - Input: 'input tap x y', 'input swype...', 'input keyevent 26' (power)
-    - Logs & Debug: 'logcat', 'dumpsys battery/wifi/window', 'top', 'ps'
-    
-    ENVIRONMENT: Runs as 'shell' user (UID 2000). Use this when Termux shell lacks permissions.
+    CRITICAL PITFALL: 
+    When querying 'content://com.android.calendar/events', recurring events (birthdays, etc.) 
+    are NOT returned as individual instances. Only the original template is returned.
+    STRATEGY: Query 'rrule' column, and if not null, manually expand instances using termux_shell.
     """
     return await shell_tools.system_shell(command=command)
 
@@ -64,52 +69,30 @@ async def system_shell(command: str) -> dict:
 
 @mcp.tool()
 async def doctor() -> dict:
-    """Provides system diagnostics, Shizuku status, and Termux:API availability."""
+    """Health check for Shizuku and Termux:API."""
     from src.doctor import get_system_info
     return {"ok": True, "data": await get_system_info()}
 
-@mcp.tool()
-async def list_artifacts() -> dict:
-    """Lists saved files (screenshots, recordings) in the artifacts directory."""
-    return {"ok": True, "data": list_artifacts()}
-
-# Middleware
+# Middleware (Auth)
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
-
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
-            logger.info(f"--> {scope['method']} {scope['path']}")
             if config.auth_token and auth_header != f"Bearer {config.auth_token}":
                 response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                 await response(scope, receive, send)
                 return
-        async def wrapped_send(message):
-            if message["type"] == "http.response.start":
-                logger.info(f"<-- Status {message.get('status')}")
-            await send(message)
-        await self.app(scope, receive, wrapped_send)
+        await self.app(scope, receive, send)
 
 def main():
     import uvicorn
     app = mcp.streamable_http_app()
     protected_app = AuthMiddleware(app)
-    mcp_url = f"http://{config.host}:{config.port}/mcp"
-    mcp_config = {
-        "mcpServers": {
-          "android-shizuku": {
-            "url": mcp_url,
-            "headers": { "Authorization": f"Bearer {config.auth_token}" if config.auth_token else "" }
-          }
-        }
-    }
     print("\n" + "="*50)
-    print("READY! Only 2 POWERFUL SHELLS are active.")
-    print("="*50)
-    print(json.dumps(mcp_config, indent=2))
+    print("READY! Multi-Shell MCP with Android Wisdom is active.")
     print("="*50 + "\n")
     config.setup_dirs()
     uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
