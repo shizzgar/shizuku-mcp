@@ -53,8 +53,15 @@ async def shell_readonly(command: str) -> dict: return await shell_tools.shell_r
 @mcp.tool()
 async def shell_privileged(command: str, confirm_dangerous: bool = False) -> dict:
     return await shell_tools.shell_privileged(command=command, confirm_dangerous=confirm_dangerous)
+
+@mcp.tool()
+async def shell_termux(command: str) -> dict:
+    """Runs a shell command directly in Termux context (access to ~/ and pkg)."""
+    return await shell_tools.shell_termux(command=command)
+
 @mcp.tool()
 async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
+
 
 # Легкая ASGI мидлварь
 class AuthMiddleware:
