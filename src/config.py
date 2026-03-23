@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ServerConfig(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8765
-    endpoint: str = "/mcp/"
+    endpoint: str = "/mcp" # FastMCP сам добавит что нужно
     auth_token: Optional[str] = None
     
     # Paths
@@ -16,12 +16,25 @@ class ServerConfig(BaseSettings):
     
     # Security & Features
     enable_raw_shell: bool = False
-    max_command_timeout_sec: int = 20
+    max_command_timeout_sec: int = 30 # Увеличим для Android 15
     allow_package_force_stop: bool = True
     allow_screenrecord: bool = True
     
     # Shell filters
-    allowed_shell_patterns: List[str] = []
+    # Теперь можно переопределить через MCP_ALLOWED_SHELL_PATTERNS="ls,top,df"
+    allowed_shell_patterns: List[str] = [
+        r"^pm list packages",
+        r"^getprop",
+        r"^settings get",
+        r"^dumpsys",
+        r"^cmd package resolve-activity",
+        r"^ls",
+        r"^cat",
+        r"^df",
+        r"^uptime",
+        r"^uname"
+    ]
+    
     denied_shell_patterns: List[str] = [
         "rm -rf /",
         "su",
