@@ -1,29 +1,21 @@
 import asyncio
 import logging
 import json
-import traceback
-from contextlib import asynccontextmanager
 from starlette.applications import Starlette
-from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Mount
 from mcp.server.fastmcp import FastMCP
 
 from src.config import config
-from src.errors import MCPError, ErrorCode
 from src.tools import doctor_tools, app_tools, intent_tools, shell_tools, screen_tools, utility_tools
 from src.artifacts import list_artifacts
 
-# Дебаг-логирование (оставляем, пока не убедимся, что всё ок)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Логирование
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- Инструменты (без изменений) ---
+# --- Инструменты ---
 @mcp.tool()
 async def doctor() -> dict: return await doctor_tools.doctor()
 @mcp.tool()
@@ -64,56 +56,45 @@ async def shell_privileged(command: str, confirm_dangerous: bool = False) -> dic
 @mcp.tool()
 async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
 
-# ASGI Middleware (Чистая проверка без блокировки стриминга)
-class SecurityMiddleware:
+# Легкая ASGI мидлварь
+class AuthMiddleware:
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+            
+            logger.info(f"--> {scope['method']} {scope['path']}")
 
-        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-        
-        # Проверка токена
-        if config.auth_token:
-            auth_val = headers.get("authorization", "")
-            if auth_val != f"Bearer {config.auth_token}":
-                logger.error(f"AUTH FAILED: {auth_val}")
+            if config.auth_token and auth_header != f"Bearer {config.auth_token}":
+                logger.warning(f"!!! AUTH FAILED")
                 response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                 await response(scope, receive, send)
                 return
 
-        # Логируем запрос (кратко)
-        logger.info(f"REQUEST: {scope['method']} {scope['path']}")
-
         async def wrapped_send(message):
             if message["type"] == "http.response.start":
-                logger.info(f"RESPONSE: Status {message['status']}")
+                status = message.get("status")
+                logger.info(f"<-- Status {status}")
+                if status in (301, 307, 308):
+                    for k, v in message.get("headers", []):
+                        if k.lower() == b"location":
+                            logger.warning(f"!!! REDIRECT TO: {v.decode()}")
             await send(message)
 
         await self.app(scope, receive, wrapped_send)
 
-# Starlette App Setup
-@asynccontextmanager
-async def lifespan(app: Starlette):
-    config.setup_dirs()
-    async with mcp.session_manager.run():
-        yield
-
-# ВАЖНО: Монтируем внутреннее приложение в корень, 
-# так как FastMCP само создает роут /mcp
-inner_mcp_app = mcp.streamable_http_app()
-app = Starlette(lifespan=lifespan)
-app.mount("/", SecurityMiddleware(inner_mcp_app))
-
 def main():
     import uvicorn
-    # В конфиге для пользователя убираем лишний слеш, 
-    # так как FastMCP добавит /mcp сам
-    mcp_url = f"http://{config.host}:{config.port}/mcp"
     
+    # Берем приложение прямо из FastMCP
+    # Оно уже содержит в себе все нужные Lifespan и роуты
+    app = mcp.streamable_http_app()
+    protected_app = AuthMiddleware(app)
+
+    mcp_url = f"http://{config.host}:{config.port}/mcp"
     mcp_config = {
         "mcpServers": {
           "android-shizuku": {
@@ -123,13 +104,14 @@ def main():
         }
     }
     print("\n" + "="*50)
-    print("READY! Copy this JSON to RikkaHub / MCP Client:")
+    print("READY! Copy this JSON to RikkaHub:")
     print("="*50)
     print(json.dumps(mcp_config, indent=2))
     print("="*50 + "\n")
 
-    logger.info(f"Starting server on {config.host}:{config.port}")
-    uvicorn.run(app, host=config.host, port=config.port, log_level="info")
+    config.setup_dirs()
+    # Запускаем обернутое приложение
+    uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
 
 if __name__ == "__main__":
     main()
