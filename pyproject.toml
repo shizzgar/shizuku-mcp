@@ -1,0 +1,24 @@
+[project]
+name = "android-shizuku-mcp"
+version = "0.1.0"
+description = "Android Shizuku MCP server for Termux"
+authors = [{ name = "Maintainer" }]
+dependencies = [
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.24.0",
+    "uvicorn>=0.22.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    "tenacity>=8.0.0",
+    "starlette>=0.27.0",
+]
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
