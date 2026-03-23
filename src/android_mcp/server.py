@@ -16,36 +16,65 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- THE UNIFIED ULTIMATE SHELL (WITH FULL COMMAND REFERENCE) ---
+# --- THE UNIFIED ULTIMATE SHELL (ULTIMATE KNOWLEDGE EMBEDDED) ---
 
 @mcp.tool()
 async def shell(command: str) -> dict:
     """
-    ULTIMATE ANDROID BASH SHELL. Your primary tool for EVERYTHING.
-    CONTEXT: Running inside Termux (Linux) with Shizuku (ADB) support.
+    ULTIMATE ANDROID BASH SHELL - THE MASTER CONTROL PORTAL. Your primary tool for EVERYTHING.
     
-    1. THE RISH-PIPE PATTERN:
-       - Use 'rish -c "command"' for system actions (ADB permissions).
-       - ALWAYS pipe to Termux tools: 'rish -c "pm list packages" | grep google'
+    1. ARCHITECTURE & PERMISSIONS:
+       - CONTEXT: You are a Linux user inside Termux.
+       - SYSTEM ACCESS: To run high-privilege Android commands (pm, am, settings, content query, dumpsys, logcat), 
+         you MUST use the rish wrapper: 'rish -c "your_command"'.
+       - NO CLI BINARY 'shizuku': Shizuku power is accessed ONLY through 'rish -c'.
+       - DATA PROCESSING: Use local Termux tools (jq, sqlite3, python, grep, awk, sed) by piping:
+         Example: 'rish -c "pm list packages" | grep google | cut -d: -f2'
     
-    2. TERMUX:API REFERENCE (Hardware & System):
-       - UI: termux-toast, termux-notification, termux-dialog (input/confirm), termux-clipboard-get/set
-       - HARDWARE: termux-battery-status, termux-torch (on/off), termux-vibrate, termux-brightness
-       - CONNECTIVITY: termux-wifi-connectioninfo, termux-wifi-scaninfo, termux-location (GPS)
-       - TELEPHONY: termux-sms-list, termux-sms-send -n <num> -m <txt>, termux-contact-list, termux-call-log, termux-telephony-deviceinfo
-       - MULTIMEDIA: termux-camera-photo <file>, termux-microphone-record -d <sec> <file>, termux-media-player play <file>
-       - STORAGE (SAF): termux-saf-ls, termux-saf-read, termux-saf-write (Access SD Card/Downloads)
+    2. TERMUX:API COMPREHENSIVE REFERENCE:
+       [UI & INTERACTION]
+       - termux-toast [-c color] [-g gravity] "message"
+       - termux-notification [-t title] [-c content] [--id id] [--action "cmd"]
+       - termux-clipboard-get / termux-clipboard-set "text"
+       - termux-dialog [confirm|checkbox|counter|date|radio|sheet|spinner|text|time]
+       [HARDWARE & SENSORS]
+       - termux-battery-status (Returns JSON: percentage, temperature, health)
+       - termux-torch [on|off] (Toggle flashlight)
+       - termux-vibrate [-d duration_ms] [-f]
+       - termux-brightness [0-255]
+       - termux-location [-p gps|network|passive] [-r last|updates|once]
+       - termux-sensor -s [sensor_name] -n 1 (Get gyro, accel, etc.)
+       [TELEPHONY & CONNECTIVITY]
+       - termux-sms-list [-l limit] [-n] (Get SMS messages)
+       - termux-sms-send -n number "message"
+       - termux-contact-list (Returns JSON contacts)
+       - termux-call-log [-l limit]
+       - termux-telephony-call <number>
+       - termux-wifi-connectioninfo / termux-wifi-scaninfo
+       [MULTIMEDIA]
+       - termux-camera-photo [-c camera_id] <file.jpg>
+       - termux-microphone-record [-d duration] [-f file.mp3]
+       - termux-media-player [play|pause|stop|info] <file>
+       [STORAGE & SAF]
+       - termux-saf-ls / termux-saf-read / termux-saf-write (Access SD Card without root)
     
-    3. ESSENTIAL UTILITIES:
-       - Use 'jq' for JSON parsing, 'sqlite3' for databases, 'python' for complex logic.
-       - Use 'termux-open <file>' to launch files in Android apps.
+    3. ANDROID CONTENT PROVIDERS (THE GOLD MINE):
+       - URI FORMAT: Calendar='content://com.android.calendar/events', SMS='content://sms/inbox', Contacts='content://contacts/people'.
+       - COLUMN DISCOVERY: URIs and columns change between Samsung/Pixel. 
+         ALWAYS run: 'rish -c "content query --uri <URI> --limit 1"' first to see valid column names.
+       - CALENDAR SECRETS: 
+         * Use columns: 'dtstart', 'dtend', 'title', 'rrule'. (NOT begin/end).
+         * Recurring events (birthdays) are NOT returned by date filters on 'dtstart'. 
+         * STRATEGY: Query 'rrule IS NOT NULL', then use Python in this shell to expand instances.
     
-    4. FILESYSTEM RULES:
-       - Files in '~/ ' are PRIVATE. 
-       - For sharing with other apps, ALWAYS use: '/sdcard/Documents/MCP/'.
+    4. FILESYSTEM & INTER-APP SHARING:
+       - PRIVATE: '~/ ' (HOME) is invisible to other apps.
+       - PUBLIC: '/sdcard/Documents/MCP/'. Use this for files (Markdown, PDF, Logs) intended for Android apps.
+       - OPENING: Use 'termux-open /sdcard/Documents/MCP/file.pdf' to launch the default Android viewer.
     
-    5. PERFORMANCE:
-       - Large output (>30k chars) is truncated and saved to '~/artifacts/'.
+    5. EXECUTION & LIMITS:
+       - TRUNCATION: Output > 30,000 chars is saved to '~/artifacts/' and truncated in your view.
+       - STRATEGY: Use 'grep' or 'head -n 100' for large dumpsys/logcat outputs.
     """
     return await shell_tools.execute_android_shell(command=command)
 
@@ -53,16 +82,16 @@ async def shell(command: str) -> dict:
 
 @mcp.tool()
 async def doctor() -> dict:
-    """Check health of Shizuku and Termux:API."""
+    """Provides system diagnostics, Shizuku status, and Termux:API availability."""
     from src.doctor import get_system_info
     return {"ok": True, "data": await get_system_info()}
 
 @mcp.tool()
 async def list_artifacts() -> dict:
-    """List files in the artifacts directory (~/artifacts)."""
+    """Lists saved files (logs, screenshots) in the artifacts directory (~/artifacts)."""
     return {"ok": True, "data": list_artifacts()}
 
-# Middleware
+# Middleware (Auth)
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -85,7 +114,7 @@ def main():
     except: pass
 
     print("\n" + "="*50)
-    print("READY! The 'Learned' Android MCP Server is active.")
+    print("READY! The Ultimate Knowledge-Powered Android Shell is active.")
     print("="*50 + "\n")
     
     config.setup_dirs()
