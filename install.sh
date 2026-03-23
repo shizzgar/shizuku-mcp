@@ -1,47 +1,45 @@
 #!/bin/bash
 set -e
 
-echo "--- Настройка Android Shizuku MCP для Termux ---"
+echo "--- Настройка Android Shizuku MCP (Termux Optimized) ---"
 
-# 1. Обновляем пакеты и ставим системные зависимости (уже собранные)
-echo "[1/5] Установка системных пакетов (бинарников)..."
+# 1. Добавляем TUR (Termux User Repository) для готовых бинарников
+echo "[1/5] Подключение репозитория TUR..."
 pkg update -y
-pkg install -y python python-pip termux-api openssl libffi binutils \
-               python-pydantic python-cryptography python-httpx \
-               python-pydantic-settings python-yaml -y
+pkg install -y tur-repo
 
-# 2. Создаем venv с доступом к системным пакетам
-echo "[2/5] Создание виртуального окружения (с поддержкой системных пакетов)..."
+# 2. Устанавливаем системные пакеты (уже скомпилированные)
+echo "[2/5] Установка системных бинарников (Pydantic, YAML и др.)..."
+pkg install -y python python-pip termux-api openssl libffi binutils \
+               python-pydantic python-pyyaml python-cryptography \
+               python-httpx -y
+
+# 3. Создаем venv с доступом к системным пакетам
+echo "[3/5] Создание виртуального окружения..."
 rm -rf venv
 python -m venv venv --system-site-packages
 source venv/bin/activate
 
-# 3. Обновляем pip и ставим только то, чего нет в pkg
-echo "[3/5] Установка оставшихся Python зависимостей..."
+# 4. Устанавливаем оставшиеся легкие зависимости через pip
+echo "[4/5] Установка Python зависимостей через pip..."
 pip install --upgrade pip
-# Ставим mcp и остальное. Pip увидит pydantic в системе и не будет его собирать.
-pip install mcp starlette uvicorn tenacity python-dotenv pydantic-settings pyyaml
+# Pip увидит системные pydantic/httpx/yaml и пропустит их
+pip install mcp starlette uvicorn tenacity python-dotenv pydantic-settings
 
-# 4. Проверка rish
-echo "[4/5] Проверка Shizuku rish..."
-mkdir -p "$HOME/bin"
-if [ ! -f "$HOME/bin/rish" ]; then
-    echo "(!) ВНИМАНИЕ: rish не найден в ~/bin/rish."
-    echo "    Пожалуйста, экспортируй rish из приложения Shizuku в ~/bin/"
-else
+# 5. Проверка rish и создание конфигов
+echo "[5/5] Финальная настройка..."
+mkdir -p "$HOME/bin" artifacts logs
+if [ -f "$HOME/bin/rish" ]; then
     chmod 700 "$HOME/bin/rish"
-    echo "OK: rish найден и настроен."
+    echo "OK: rish найден в ~/bin/"
+else
+    echo "(!) Напоминание: не забудь скопировать rish в ~/bin/ после установки."
 fi
 
-# 5. Генерация конфига
-echo "[5/5] Настройка конфигурации..."
-mkdir -p artifacts logs
 if [ ! -f ".env" ]; then
     TOKEN=$(openssl rand -hex 16)
     echo "MCP_AUTH_TOKEN=$TOKEN" > .env
-    echo "OK: Создан .env с новым токеном: $TOKEN"
-else
-    echo "OK: .env уже существует."
+    echo "OK: Создан .env с токеном: $TOKEN"
 fi
 
 echo "------------------------------------------------"
