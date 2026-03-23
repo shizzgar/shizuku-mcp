@@ -20,51 +20,55 @@ mcp = FastMCP("android-shizuku-mcp")
 
 @mcp.resource("knowledge://android/pitfalls")
 def get_android_pitfalls() -> str:
-    """Critical technical notes about Android Content Providers and Shell limitations."""
+    """A collection of hard-learned lessons about Android automation."""
     return """
-    1. CALENDAR RECURRING EVENTS:
-       Standard 'content query' on 'content://com.android.calendar/events' fails to return recurring instances.
-       STRATEGY: Use termux_shell to run: 'rish -c "content query --uri content://com.android.calendar/events" | python process_script.py'
+    1. THE SHIZUKU MYTH: 
+       There is NO 'shizuku' command line binary. Shizuku is a service. 
+       To use its power, run commands via 'rish -c "your_command"'.
     
-    2. PUBLIC FILES ACCESS:
-       Files in Termux home (~/) are PRIVATE. Always use '/sdcard/Documents/MCP/' for sharing with other Android apps.
+    2. PROTECTED DATABASES:
+       Direct SQLite access to '/data/data/com.android.providers...' is FORBIDDEN even via rish.
+       ONLY use 'content query --uri ...' to fetch data from Calendar, SMS, and Contacts.
     
-    3. THE RISH PIPE PATTERN:
-       To process system data with powerful tools (jq, sqlite3, awk), use rish INSIDE termux_shell:
-       'rish -c "dumpsys window" | grep -i focus'
+    3. CALENDAR API SECRETS:
+       - Samsung/Modern Android URI: 'content://com.android.calendar/events'
+       - Core Columns: '_id', 'title', 'dtstart', 'dtend', 'rrule', 'allDay'.
+       - Recurring Events: Filtering by date on 'dtstart' misses birthdays/anniversaries.
+       - STRATEGY: Fetch all events where 'rrule' is not null, then expand manually in Python.
     
-    4. LARGE OUTPUT (dumpsys, logcat):
-       Commands like 'dumpsys' produce HUGE output. 
-       - ALWAYS use 'grep' to filter.
-       - If output is truncated, find the full log in the 'artifacts' directory.
+    4. CONTENT PROVIDER DEBUGGING:
+       Always run 'rish -c "content query --uri <URI> --limit 1"' first to discover actual column names.
+    
+    5. SHELL REDIRECTION:
+       When using 'rish -c', be careful with nested quotes. 
+       Example: 'rish -c "pm list packages" | grep google' works best.
     """
 
-# --- UNIFIED ULTIMATE SHELL TOOL ---
+# --- THE ULTIMATE UNIFIED SHELL ---
 
 @mcp.tool()
 async def shell(command: str) -> dict:
     """
-    ULTIMATE ANDROID BASH SHELL. Your primary tool for EVERYTHING.
+    ULTIMATE ANDROID BASH SHELL (Termux Context). 
     
-    1. CONTEXT: You are running inside Termux.
+    GUIDELINES FOR LLM:
+    1. SHIZUKU: Use 'rish -c "command"' for all system actions (pm, am, settings, content). 
+       DO NOT look for a 'shizuku' binary.
     
-    2. THE POWER MOVE (RISH-PIPE):
-       To run high-privilege system commands, use 'rish -c "command"'.
-       ALWAYS pipe 'rish' output to local tools (jq, grep, awk, python) for processing.
-       Example: 'rish -c "pm list packages" | grep google | wc -l'
+    2. CALENDAR/SMS/CONTACTS: 
+       - Always use 'content query --uri ...'.
+       - For Calendar, use 'dtstart' and 'dtend' (not begin/end).
+       - To get ALL recurring events, query without date filters and look for 'rrule' column.
     
-    3. HARDWARE ACCESS (Termux:API):
-       Use 'termux-*' commands directly (battery-status, location, toast, etc.)
+    3. DATA PROCESSING: 
+       Pipe 'rish' output to 'jq', 'sqlite3', or 'python' for analysis.
+       Example: 'rish -c "content query --uri content://sms/inbox" | head -n 5'
     
-    4. FILESYSTEM & STORAGE:
-       - '~/' (HOME): Private.
-       - '/sdcard/Documents/MCP/': SHARED. USE THIS for files to be opened by Android apps.
+    4. LARGE OUTPUT: 
+       If you run 'dumpsys', output will be truncated at 30k chars. Use 'grep'!
     
-    ⚠️ LARGE OUTPUT MANAGEMENT:
-    - Commands like 'dumpsys', 'logcat', or 'pm list' can return megabytes of data.
-    - If the output exceeds 30,000 chars, it will be AUTOMATICALLY TRUNCATED.
-    - The FULL output will be saved to a .txt file in the artifacts directory.
-    - STRATEGY: Always use 'grep', 'head -n 100', or 'tail' to avoid truncation.
+    5. STORAGE: 
+       Save public files to '/sdcard/Documents/MCP/'.
     """
     return await shell_tools.execute_android_shell(command=command)
 
@@ -72,16 +76,16 @@ async def shell(command: str) -> dict:
 
 @mcp.tool()
 async def doctor() -> dict:
-    """Check health of Shizuku and Termux:API."""
+    """Provides system diagnostics, Shizuku status, and Termux:API availability."""
     from src.doctor import get_system_info
     return {"ok": True, "data": await get_system_info()}
 
 @mcp.tool()
 async def list_artifacts() -> dict:
-    """List saved files (logs, screenshots) in the artifacts directory."""
+    """Lists saved files (logs, screenshots) in the artifacts directory."""
     return {"ok": True, "data": list_artifacts()}
 
-# Middleware (Auth)
+# Middleware
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -102,7 +106,7 @@ def main():
     try: os.makedirs("/sdcard/Documents/MCP", exist_ok=True)
     except: pass
     print("\n" + "="*50)
-    print("READY! The Unified Shell with Large Output Protection is active.")
+    print("READY! The 'Learned' Android MCP Server is active.")
     print("="*50 + "\n")
     config.setup_dirs()
     uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
