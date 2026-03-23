@@ -6,7 +6,7 @@ from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
 from src.config import config
-from src.tools import doctor_tools, app_tools, intent_tools, shell_tools, screen_tools, utility_tools
+from src.tools import shell_tools
 from src.tools.mega_termux_tools import run_mega_termux_command
 from src.artifacts import list_artifacts
 
@@ -16,77 +16,69 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- Инструменты ---
-@mcp.tool()
-async def doctor() -> dict: return await doctor_tools.doctor()
-@mcp.tool()
-async def ping() -> dict: return await doctor_tools.ping()
-@mcp.tool()
-async def list_packages(third_party_only: bool = True, filter_str: str = None) -> dict:
-    return await app_tools.list_packages(third_party_only=third_party_only, filter_str=filter_str)
-@mcp.tool()
-async def open_app(package_name: str) -> dict: return await app_tools.open_app(package_name=package_name)
-@mcp.tool()
-async def force_stop(package_name: str) -> dict: return await app_tools.force_stop(package_name=package_name)
-@mcp.tool()
-async def start_intent(action: str = None, data: str = None, package: str = None, component: str = None, extras: dict = None) -> dict:
-    return await intent_tools.start_intent(action, data, package, component, extras)
-@mcp.tool()
-async def open_url(url: str) -> dict: return await intent_tools.open_url(url=url)
-@mcp.tool()
-async def take_screenshot() -> dict: return await screen_tools.take_screenshot()
-@mcp.tool()
-async def record_screen(duration_sec: int = 10) -> dict: return await screen_tools.record_screen(duration_sec=duration_sec)
-
-# MEGA TERMUX TOOL (Обертка над 80+ командами Termux)
-@mcp.tool()
-async def termux_cmd(command: str, args: list[str] = None) -> dict:
-    """
-    Executes ANY Termux or Termux:API command. 
-    You can omit the 'termux-' prefix.
-    Examples of commands:
-    - 'battery-status' -> Returns JSON battery info
-    - 'camera-photo' with args=['/sdcard/photo.jpg'] -> Takes a photo
-    - 'clipboard-get' / 'clipboard-set' with args=['text']
-    - 'contact-list', 'location', 'sms-list', 'call-log'
-    - 'notification' with args=['-t', 'Title', '-c', 'Content']
-    - 'tts-speak' with args=['Hello']
-    - 'vibrate' with args=['1000']
-    - 'volume', 'torch', 'brightness'
-    - 'saf-ls', 'saf-read' etc.
-    Returns JSON if the command outputs JSON, otherwise plain text.
-    """
-    return await run_mega_termux_command(command, args)
-
-# Legacy / Convenience Shortcuts (they map to utility_tools under the hood)
-@mcp.tool()
-async def clipboard_get() -> dict: return await utility_tools.clipboard_get()
-@mcp.tool()
-async def clipboard_set(text: str) -> dict: return await utility_tools.clipboard_set(text=text)
-@mcp.tool()
-async def show_notification(title: str, content: str) -> dict: return await utility_tools.show_notification(title=title, content=content)
-@mcp.tool()
-async def battery_status() -> dict: return await utility_tools.battery_status()
-@mcp.tool()
-async def wifi_status() -> dict: return await utility_tools.wifi_status()
-@mcp.tool()
-async def device_info() -> dict: return await utility_tools.device_info()
-
-# НОВЫЕ ЛАКОНИЧНЫЕ ШЕЛЛЫ
-@mcp.tool()
-async def system_shell(command: str) -> dict:
-    """Runs a shell command via Shizuku (System context, ADB user)."""
-    return await shell_tools.system_shell(command=command)
+# --- ОЧИЩЕННЫЙ СПИСОК ИНСТРУМЕНТОВ (ТОЛЬКО SHELL И MEGA-WRAPPER) ---
 
 @mcp.tool()
 async def termux_shell(command: str) -> dict:
-    """Runs a shell command directly in Termux context (Termux user)."""
+    """
+    Executes a bash command directly in the Termux environment (User level).
+    Use this for:
+    - Managing files in ~/ (Termux home)
+    - Running installed packages (python, git, ffmpeg, etc.)
+    - Using pkg/apt package managers
+    - Accessing any Termux-specific utilities
+    """
     return await shell_tools.termux_shell(command=command)
 
 @mcp.tool()
-async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
+async def system_shell(command: str) -> dict:
+    """
+    Executes a shell command via Shizuku/rish (System level, ADB user context).
+    Use this for:
+    - Managing Android apps (pm list packages, am start, etc.)
+    - Changing system settings (settings get/put)
+    - Diagnostics (dumpsys, top, logcat)
+    - Any high-privilege Android system operations
+    """
+    return await shell_tools.system_shell(command=command)
 
-# Мидлварь
+@mcp.tool()
+async def termux_cmd(command: str, args: list[str] = None) -> dict:
+    """
+    ULTIMATE WRAPPER for all 80+ Termux and Termux:API commands.
+    Automatically handles 'termux-' prefix and parses JSON output.
+
+    --- AVAILABLE COMMANDS REFERENCE ---
+    
+    1. BASIC (No API required):
+    termux-info, termux-wake-lock, termux-wake-unlock, termux-setup-storage, 
+    termux-open, termux-open-url, termux-reload-settings, termux-backup, termux-restore
+
+    2. POWER & DISPLAY (API):
+    battery-status, brightness, torch (flashlight), wallpaper
+
+    3. IO & UI (API):
+    clipboard-get, clipboard-set, toast, notification, notification-list, 
+    notification-remove, dialog (input/confirm/etc.)
+
+    4. MULTIMEDIA (API):
+    camera-info, camera-photo, microphone-record, media-player, media-scan
+
+    5. NETWORK & SENSORS (API):
+    wifi-scaninfo, wifi-connectioninfo, wifi-enable, location (GPS), sensor (gyro/accel)
+
+    6. TELEPHONY (API):
+    call-log, contact-list, sms-inbox, sms-list, sms-send, telephony-call, telephony-deviceinfo
+
+    7. STORAGE (SAF - Storage Access Framework):
+    saf-ls, saf-read, saf-write, saf-mkdir, saf-rm, saf-stat
+
+    8. SYSTEM (API):
+    share, download, fingerprint, keystore, job-scheduler, volume, vibrate, tts-speak
+    """
+    return await run_mega_termux_command(command, args)
+
+# Мидлварь безопасности (остается без изменений)
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -120,7 +112,7 @@ def main():
         }
     }
     print("\n" + "="*50)
-    print("READY! Copy this JSON to RikkaHub:")
+    print("READY! Only 3 powerful shell tools are active.")
     print("="*50)
     print(json.dumps(mcp_config, indent=2))
     print("="*50 + "\n")
