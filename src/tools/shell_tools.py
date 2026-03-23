@@ -16,31 +16,23 @@ def is_safe_command(command: str) -> bool:
             return False
     return True
 
-async def shell_readonly(command: str) -> Dict[str, Any]:
-    """Runs a shell command via Shizuku (System context)."""
-    if not config.enable_raw_shell:
-        # Whitelist logic...
-        pass
-    
+async def system_shell(command: str) -> Dict[str, Any]:
+    """Runs a shell command via Shizuku (System context, ADB user).
+    Access to: pm, am, settings, dumpsys, and all Android system utilities.
+    """
     if not is_safe_command(command):
         raise MCPError(ErrorCode.TOOL_DISABLED, f"Command contains denied patterns.")
 
     rc, stdout, stderr = await rish_runner.run_rish(command)
     return {"ok": True, "data": {"exit_code": rc, "stdout": stdout, "stderr": stderr}}
 
-async def shell_privileged(command: str, confirm_dangerous: bool = True) -> Dict[str, Any]:
-    """Runs a shell command via Shizuku (System context)."""
-    if not config.enable_raw_shell:
-        raise MCPError(ErrorCode.TOOL_DISABLED, "Privileged shell is disabled.")
-    
-    rc, stdout, stderr = await rish_runner.run_rish(command)
-    return {"ok": True, "data": {"exit_code": rc, "stdout": stdout, "stderr": stderr}}
-
-async def shell_termux(command: str) -> Dict[str, Any]:
-    """Runs a shell command directly in Termux context (access to ~/ and pkg)."""
+async def termux_shell(command: str) -> Dict[str, Any]:
+    """Runs a shell command directly in Termux context (Termux user).
+    Access to: pkg, apt, python, git, and files in Termux home directory.
+    """
     if not is_safe_command(command):
         raise MCPError(ErrorCode.TOOL_DISABLED, f"Command contains denied patterns.")
 
-    # Используем прямой запуск через bash, чтобы работали алиасы и пути Termux
+    # Используем bash для доступа к окружению Termux
     rc, stdout, stderr = await run_command(["/data/data/com.termux/files/usr/bin/bash", "-c", command])
     return {"ok": True, "data": {"exit_code": rc, "stdout": stdout, "stderr": stderr}}

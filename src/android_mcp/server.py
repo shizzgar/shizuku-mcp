@@ -48,22 +48,22 @@ async def battery_status() -> dict: return await utility_tools.battery_status()
 async def wifi_status() -> dict: return await utility_tools.wifi_status()
 @mcp.tool()
 async def device_info() -> dict: return await utility_tools.device_info()
+
+# НОВЫЕ ЛАКОНИЧНЫЕ ШЕЛЛЫ
 @mcp.tool()
-async def shell_readonly(command: str) -> dict: return await shell_tools.shell_readonly(command=command)
-@mcp.tool()
-async def shell_privileged(command: str, confirm_dangerous: bool = False) -> dict:
-    return await shell_tools.shell_privileged(command=command, confirm_dangerous=confirm_dangerous)
+async def system_shell(command: str) -> dict:
+    """Runs a shell command via Shizuku (System context, ADB user)."""
+    return await shell_tools.system_shell(command=command)
 
 @mcp.tool()
-async def shell_termux(command: str) -> dict:
-    """Runs a shell command directly in Termux context (access to ~/ and pkg)."""
-    return await shell_tools.shell_termux(command=command)
+async def termux_shell(command: str) -> dict:
+    """Runs a shell command directly in Termux context (Termux user)."""
+    return await shell_tools.termux_shell(command=command)
 
 @mcp.tool()
 async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
 
-
-# Легкая ASGI мидлварь
+# Мидлварь
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -72,35 +72,21 @@ class AuthMiddleware:
         if scope["type"] == "http":
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
-            
             logger.info(f"--> {scope['method']} {scope['path']}")
-
             if config.auth_token and auth_header != f"Bearer {config.auth_token}":
-                logger.warning(f"!!! AUTH FAILED")
                 response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                 await response(scope, receive, send)
                 return
-
         async def wrapped_send(message):
             if message["type"] == "http.response.start":
-                status = message.get("status")
-                logger.info(f"<-- Status {status}")
-                if status in (301, 307, 308):
-                    for k, v in message.get("headers", []):
-                        if k.lower() == b"location":
-                            logger.warning(f"!!! REDIRECT TO: {v.decode()}")
+                logger.info(f"<-- Status {message.get('status')}")
             await send(message)
-
         await self.app(scope, receive, wrapped_send)
 
 def main():
     import uvicorn
-    
-    # Берем приложение прямо из FastMCP
-    # Оно уже содержит в себе все нужные Lifespan и роуты
     app = mcp.streamable_http_app()
     protected_app = AuthMiddleware(app)
-
     mcp_url = f"http://{config.host}:{config.port}/mcp"
     mcp_config = {
         "mcpServers": {
@@ -115,9 +101,7 @@ def main():
     print("="*50)
     print(json.dumps(mcp_config, indent=2))
     print("="*50 + "\n")
-
     config.setup_dirs()
-    # Запускаем обернутое приложение
     uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
 
 if __name__ == "__main__":
