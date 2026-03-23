@@ -16,6 +16,29 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
+# --- KNOWLEDGE RESOURCES ---
+
+@mcp.resource("knowledge://android/pitfalls")
+def get_android_pitfalls() -> str:
+    """Critical technical notes about Android Content Providers and Shell limitations."""
+    return """
+    1. CALENDAR RECURRING EVENTS:
+       Standard 'content query' on 'content://com.android.calendar/events' fails to return recurring instances.
+       STRATEGY: Use termux_shell to run: 'rish -c "content query --uri content://com.android.calendar/events" | python process_script.py'
+    
+    2. PUBLIC FILES ACCESS:
+       Files in Termux home (~/) are PRIVATE. Always use '/sdcard/Documents/MCP/' for sharing with other Android apps.
+    
+    3. THE RISH PIPE PATTERN:
+       To process system data with powerful tools (jq, sqlite3, awk), use rish INSIDE termux_shell:
+       'rish -c "dumpsys window" | grep -i focus'
+    
+    4. LARGE OUTPUT (dumpsys, logcat):
+       Commands like 'dumpsys' produce HUGE output. 
+       - ALWAYS use 'grep' to filter.
+       - If output is truncated, find the full log in the 'artifacts' directory.
+    """
+
 # --- UNIFIED ULTIMATE SHELL TOOL ---
 
 @mcp.tool()
@@ -23,34 +46,25 @@ async def shell(command: str) -> dict:
     """
     ULTIMATE ANDROID BASH SHELL. Your primary tool for EVERYTHING.
     
-    1. CONTEXT: You are running inside Termux (Linux environment on Android).
+    1. CONTEXT: You are running inside Termux.
     
     2. THE POWER MOVE (RISH-PIPE):
        To run high-privilege system commands, use 'rish -c "command"'.
        ALWAYS pipe 'rish' output to local tools (jq, grep, awk, python) for processing.
        Example: 'rish -c "pm list packages" | grep google | wc -l'
-       Example: 'rish -c "dumpsys battery" | grep level'
     
     3. HARDWARE ACCESS (Termux:API):
-       Use 'termux-*' commands directly for Android hardware:
-       - battery-status, wifi-connectioninfo, location (GPS)
-       - toast "message", notification -c "text", vibration, torch on/off
-       - clipboard-get, clipboard-set "text"
-       - sms-list, contact-list, call-log
+       Use 'termux-*' commands directly (battery-status, location, toast, etc.)
     
     4. FILESYSTEM & STORAGE:
-       - '~/' (HOME): Private Termux space. Use for scripts and temporary data.
-       - '/sdcard/Documents/MCP/': SHARED space. USE THIS to save files (Markdown, PDF, Images) 
-         intended to be opened by other Android apps.
-       - To open a shared file in an Android app: 'termux-open /sdcard/Documents/MCP/file.ext'
+       - '~/' (HOME): Private.
+       - '/sdcard/Documents/MCP/': SHARED. USE THIS for files to be opened by Android apps.
     
-    5. DATA ANALYSIS:
-       You have 'sqlite3', 'python', 'jq', 'curl', 'sed' pre-installed. 
-       Fetch data via 'rish' or 'content query', then analyze it here.
-    
-    6. APP MANAGEMENT:
-       Use 'rish -c "am start -n <component>"', 'rish -c "am force-stop <pkg>"', 
-       or 'rish -c "pm dump <pkg>"'.
+    ⚠️ LARGE OUTPUT MANAGEMENT:
+    - Commands like 'dumpsys', 'logcat', or 'pm list' can return megabytes of data.
+    - If the output exceeds 30,000 chars, it will be AUTOMATICALLY TRUNCATED.
+    - The FULL output will be saved to a .txt file in the artifacts directory.
+    - STRATEGY: Always use 'grep', 'head -n 100', or 'tail' to avoid truncation.
     """
     return await shell_tools.execute_android_shell(command=command)
 
@@ -64,7 +78,7 @@ async def doctor() -> dict:
 
 @mcp.tool()
 async def list_artifacts() -> dict:
-    """List files in the artifacts directory (~/artifacts)."""
+    """List saved files (logs, screenshots) in the artifacts directory."""
     return {"ok": True, "data": list_artifacts()}
 
 # Middleware (Auth)
@@ -85,15 +99,11 @@ def main():
     import uvicorn
     app = mcp.streamable_http_app()
     protected_app = AuthMiddleware(app)
-    
-    # Ensure shared directory exists
     try: os.makedirs("/sdcard/Documents/MCP", exist_ok=True)
     except: pass
-
     print("\n" + "="*50)
-    print("READY! The Unified Ultimate Android Shell is active.")
+    print("READY! The Unified Shell with Large Output Protection is active.")
     print("="*50 + "\n")
-    
     config.setup_dirs()
     uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
 
