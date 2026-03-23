@@ -7,7 +7,6 @@ from mcp.server.fastmcp import FastMCP
 
 from src.config import config
 from src.tools import shell_tools
-from src.tools.mega_termux_tools import run_mega_termux_command
 from src.artifacts import list_artifacts
 
 # Логирование
@@ -16,69 +15,65 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- ОЧИЩЕННЫЙ СПИСОК ИНСТРУМЕНТОВ (ТОЛЬКО SHELL И MEGA-WRAPPER) ---
+# --- TWO POWERFUL SHELL TOOLS ---
 
 @mcp.tool()
 async def termux_shell(command: str) -> dict:
     """
-    Executes a bash command directly in the Termux environment (User level).
-    Use this for:
-    - Managing files in ~/ (Termux home)
-    - Running installed packages (python, git, ffmpeg, etc.)
-    - Using pkg/apt package managers
-    - Accessing any Termux-specific utilities
+    [TERMUX USER CONTEXT] - Direct access to the Termux environment.
+    Use this for file management, package management, and hardware interaction via Termux:API.
+    
+    KEY CAPABILITIES:
+    - Filesystem: Access to ~/ (home), pipes (|), redirects (>), and complex bash scripts.
+    - Packages: Use 'pkg install <name>' or 'apt' to add new tools. 
+    - Installed Tools: python, git, ffmpeg, curl, etc.
+    - Hardware (Termux:API): Use 'termux-*' commands for hardware access:
+        * battery-status, wifi-connectioninfo, location (GPS)
+        * toast, notification, dialog, vibration, torch
+        * clipboard-get, clipboard-set
+        * camera-photo, microphone-record, media-player
+        * sms-list, sms-send, call-log, contact-list
+        * saf-ls, saf-read, saf-write (Access to SD Card/Downloads without root)
+    
+    ENVIRONMENT: Full bash shell with correct PATH, HOME, and PREFIX.
     """
     return await shell_tools.termux_shell(command=command)
 
 @mcp.tool()
 async def system_shell(command: str) -> dict:
     """
-    Executes a shell command via Shizuku/rish (System level, ADB user context).
-    Use this for:
-    - Managing Android apps (pm list packages, am start, etc.)
-    - Changing system settings (settings get/put)
-    - Diagnostics (dumpsys, top, logcat)
-    - Any high-privilege Android system operations
+    [SYSTEM ADB CONTEXT] - High-privilege access via Shizuku (rish).
+    Use this for Android OS management, app control, and deep system diagnostics.
+    
+    KEY CAPABILITIES:
+    - App Management: 
+        * 'pm list packages' (list apps)
+        * 'am start -n <comp>' (launch any activity)
+        * 'am force-stop <pkg>' (kill any app)
+        * 'pm dump <pkg>' (get app details)
+    - System Settings: 'settings get/put global/secure/system <key> <value>'
+    - Screen Control: 'screencap -p /sdcard/s.png', 'screenrecord --time-limit 10 /sdcard/v.mp4'
+    - Input: 'input tap x y', 'input swype...', 'input keyevent 26' (power)
+    - Logs & Debug: 'logcat', 'dumpsys battery/wifi/window', 'top', 'ps'
+    
+    ENVIRONMENT: Runs as 'shell' user (UID 2000). Use this when Termux shell lacks permissions.
     """
     return await shell_tools.system_shell(command=command)
 
+# --- SERVICE TOOLS ---
+
 @mcp.tool()
-async def termux_cmd(command: str, args: list[str] = None) -> dict:
-    """
-    ULTIMATE WRAPPER for all 80+ Termux and Termux:API commands.
-    Automatically handles 'termux-' prefix and parses JSON output.
+async def doctor() -> dict:
+    """Provides system diagnostics, Shizuku status, and Termux:API availability."""
+    from src.doctor import get_system_info
+    return {"ok": True, "data": await get_system_info()}
 
-    --- AVAILABLE COMMANDS REFERENCE ---
-    
-    1. BASIC (No API required):
-    termux-info, termux-wake-lock, termux-wake-unlock, termux-setup-storage, 
-    termux-open, termux-open-url, termux-reload-settings, termux-backup, termux-restore
+@mcp.tool()
+async def list_artifacts() -> dict:
+    """Lists saved files (screenshots, recordings) in the artifacts directory."""
+    return {"ok": True, "data": list_artifacts()}
 
-    2. POWER & DISPLAY (API):
-    battery-status, brightness, torch (flashlight), wallpaper
-
-    3. IO & UI (API):
-    clipboard-get, clipboard-set, toast, notification, notification-list, 
-    notification-remove, dialog (input/confirm/etc.)
-
-    4. MULTIMEDIA (API):
-    camera-info, camera-photo, microphone-record, media-player, media-scan
-
-    5. NETWORK & SENSORS (API):
-    wifi-scaninfo, wifi-connectioninfo, wifi-enable, location (GPS), sensor (gyro/accel)
-
-    6. TELEPHONY (API):
-    call-log, contact-list, sms-inbox, sms-list, sms-send, telephony-call, telephony-deviceinfo
-
-    7. STORAGE (SAF - Storage Access Framework):
-    saf-ls, saf-read, saf-write, saf-mkdir, saf-rm, saf-stat
-
-    8. SYSTEM (API):
-    share, download, fingerprint, keystore, job-scheduler, volume, vibrate, tts-speak
-    """
-    return await run_mega_termux_command(command, args)
-
-# Мидлварь безопасности (остается без изменений)
+# Middleware
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -112,7 +107,7 @@ def main():
         }
     }
     print("\n" + "="*50)
-    print("READY! Only 3 powerful shell tools are active.")
+    print("READY! Only 2 POWERFUL SHELLS are active.")
     print("="*50)
     print(json.dumps(mcp_config, indent=2))
     print("="*50 + "\n")
