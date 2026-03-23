@@ -16,57 +16,43 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 mcp = FastMCP("android-shizuku-mcp")
 
-# --- KNOWLEDGE RESOURCES ---
-
-@mcp.resource("knowledge://android/pitfalls")
-def get_android_pitfalls() -> str:
-    """Critical technical notes about Android Content Providers and Shell limitations."""
-    return """
-    1. CALENDAR RECURRING EVENTS:
-       Standard 'content query' on 'content://com.android.calendar/events' fails to return recurring instances.
-       STRATEGY: Use termux_shell to run: 'rish -c "content query --uri content://com.android.calendar/events" | python process_script.py'
-    
-    2. PUBLIC FILES ACCESS:
-       Files in Termux home (~/) are PRIVATE. Always use '/sdcard/Documents/MCP/' for sharing with other Android apps.
-    
-    3. THE RISH PIPE PATTERN:
-       To process system data with powerful tools (jq, sqlite3, awk), use rish INSIDE termux_shell:
-       'rish -c "dumpsys window" | grep -i focus'
-    """
-
-# --- THE DUAL PORTAL ARCHITECTURE ---
+# --- UNIFIED ULTIMATE SHELL TOOL ---
 
 @mcp.tool()
-async def termux_shell(command: str) -> dict:
+async def shell(command: str) -> dict:
     """
-    [TERMUX CONTEXT] - Direct access to Termux environment (User level).
+    ULTIMATE ANDROID BASH SHELL. Your primary tool for EVERYTHING.
     
-    ULTIMATE CAPABILITY: 
-    You can run system commands via 'rish' and pipe them to Termux utilities (jq, sqlite3, awk, python, sed).
+    1. CONTEXT: You are running inside Termux (Linux environment on Android).
     
-    EXAMPLES:
-    - List apps and count: 'rish -c "pm list packages" | wc -l'
-    - Advanced Battery: 'rish -c "dumpsys battery" | grep -E "level|status"'
-    - File sharing: 'echo "content" > /sdcard/Documents/MCP/test.txt && termux-open /sdcard/Documents/MCP/test.txt'
-    - Manage packages: 'pkg install <package_name>'
+    2. THE POWER MOVE (RISH-PIPE):
+       To run high-privilege system commands, use 'rish -c "command"'.
+       ALWAYS pipe 'rish' output to local tools (jq, grep, awk, python) for processing.
+       Example: 'rish -c "pm list packages" | grep google | wc -l'
+       Example: 'rish -c "dumpsys battery" | grep level'
     
-    Use this for ALL data processing, file creation, and Termux:API hardware calls.
+    3. HARDWARE ACCESS (Termux:API):
+       Use 'termux-*' commands directly for Android hardware:
+       - battery-status, wifi-connectioninfo, location (GPS)
+       - toast "message", notification -c "text", vibration, torch on/off
+       - clipboard-get, clipboard-set "text"
+       - sms-list, contact-list, call-log
+    
+    4. FILESYSTEM & STORAGE:
+       - '~/' (HOME): Private Termux space. Use for scripts and temporary data.
+       - '/sdcard/Documents/MCP/': SHARED space. USE THIS to save files (Markdown, PDF, Images) 
+         intended to be opened by other Android apps.
+       - To open a shared file in an Android app: 'termux-open /sdcard/Documents/MCP/file.ext'
+    
+    5. DATA ANALYSIS:
+       You have 'sqlite3', 'python', 'jq', 'curl', 'sed' pre-installed. 
+       Fetch data via 'rish' or 'content query', then analyze it here.
+    
+    6. APP MANAGEMENT:
+       Use 'rish -c "am start -n <component>"', 'rish -c "am force-stop <pkg>"', 
+       or 'rish -c "pm dump <pkg>"'.
     """
-    return await shell_tools.termux_shell(command=command)
-
-@mcp.tool()
-async def system_shell(command: str) -> dict:
-    """
-    [SYSTEM CONTEXT] - Direct high-privilege access via Shizuku (ADB user).
-    Use this for PURE Android commands that don't need Termux-side processing.
-    
-    CAPABILITIES:
-    - pm (package manager), am (activity manager), settings, logcat, dumpsys, input.
-    - Direct content provider queries.
-    
-    NOTE: If you need to 'grep' or 'process' large output, use termux_shell with 'rish -c' instead!
-    """
-    return await shell_tools.system_shell(command=command)
+    return await shell_tools.execute_android_shell(command=command)
 
 # --- SERVICE TOOLS ---
 
@@ -78,10 +64,10 @@ async def doctor() -> dict:
 
 @mcp.tool()
 async def list_artifacts() -> dict:
-    """List files in the artifacts directory."""
+    """List files in the artifacts directory (~/artifacts)."""
     return {"ok": True, "data": list_artifacts()}
 
-# Middleware
+# Middleware (Auth)
 class AuthMiddleware:
     def __init__(self, app):
         self.app = app
@@ -100,14 +86,12 @@ def main():
     app = mcp.streamable_http_app()
     protected_app = AuthMiddleware(app)
     
-    # Авто-создание папки для обмена
-    try:
-        os.makedirs("/sdcard/Documents/MCP", exist_ok=True)
-    except:
-        pass
+    # Ensure shared directory exists
+    try: os.makedirs("/sdcard/Documents/MCP", exist_ok=True)
+    except: pass
 
     print("\n" + "="*50)
-    print("READY! The Dual-Shell 'Rish-Pipe' Portal is active.")
+    print("READY! The Unified Ultimate Android Shell is active.")
     print("="*50 + "\n")
     
     config.setup_dirs()
