@@ -148,6 +148,28 @@ app.mount(config.endpoint, mcp.streamable_http_app())
 
 def main():
     import uvicorn
+    import json
+    
+    # Формируем конфиг для пользователя
+    mcp_config = {
+        "mcpServers": {
+          "android-shizuku": {
+            "url": f"http://{config.host}:{config.port}{config.endpoint}",
+            "headers": {
+              "Authorization": f"Bearer {config.auth_token}" if config.auth_token else ""
+            }
+          }
+        }
+    }
+
+    print("\n" + "="*50)
+    print("READY! Copy this JSON to your MCP Client config:")
+    print("="*50)
+    print(json.dumps(mcp_config, indent=2))
+    print("="*50)
+    print(f"NOTE: For PC connection, run: adb reverse tcp:{config.port} tcp:{config.port}")
+    print("="*50 + "\n")
+
     logger.info(f"Starting Android Shizuku MCP server on {config.host}:{config.port}")
     uvicorn.run(app, host=config.host, port=config.port)
 
