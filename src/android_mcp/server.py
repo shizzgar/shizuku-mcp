@@ -137,7 +137,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: Starlette):
     config.setup_dirs()
-    async with mcp._app.session_manager.run():
+    async with mcp.session_manager.run():
         yield
 
 app = Starlette(lifespan=lifespan)
