@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP
 
 from src.config import config
 from src.tools import doctor_tools, app_tools, intent_tools, shell_tools, screen_tools, utility_tools
+from src.tools.mega_termux_tools import run_mega_termux_command
 from src.artifacts import list_artifacts
 
 # Логирование
@@ -36,6 +37,28 @@ async def open_url(url: str) -> dict: return await intent_tools.open_url(url=url
 async def take_screenshot() -> dict: return await screen_tools.take_screenshot()
 @mcp.tool()
 async def record_screen(duration_sec: int = 10) -> dict: return await screen_tools.record_screen(duration_sec=duration_sec)
+
+# MEGA TERMUX TOOL (Обертка над 80+ командами Termux)
+@mcp.tool()
+async def termux_cmd(command: str, args: list[str] = None) -> dict:
+    """
+    Executes ANY Termux or Termux:API command. 
+    You can omit the 'termux-' prefix.
+    Examples of commands:
+    - 'battery-status' -> Returns JSON battery info
+    - 'camera-photo' with args=['/sdcard/photo.jpg'] -> Takes a photo
+    - 'clipboard-get' / 'clipboard-set' with args=['text']
+    - 'contact-list', 'location', 'sms-list', 'call-log'
+    - 'notification' with args=['-t', 'Title', '-c', 'Content']
+    - 'tts-speak' with args=['Hello']
+    - 'vibrate' with args=['1000']
+    - 'volume', 'torch', 'brightness'
+    - 'saf-ls', 'saf-read' etc.
+    Returns JSON if the command outputs JSON, otherwise plain text.
+    """
+    return await run_mega_termux_command(command, args)
+
+# Legacy / Convenience Shortcuts (they map to utility_tools under the hood)
 @mcp.tool()
 async def clipboard_get() -> dict: return await utility_tools.clipboard_get()
 @mcp.tool()
