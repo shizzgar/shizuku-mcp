@@ -14,14 +14,13 @@ from src.errors import MCPError, ErrorCode
 from src.tools import doctor_tools, app_tools, intent_tools, shell_tools, screen_tools, utility_tools
 from src.artifacts import list_artifacts
 
-# Усиленное логирование
+# Дебаг-логирование (оставляем, пока не убедимся, что всё ок)
 logging.basicConfig(
-    level=logging.DEBUG, # Ставим DEBUG для максимальной детализации
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("android-shizuku-mcp")
 
-# Initialize FastMCP
 mcp = FastMCP("android-shizuku-mcp")
 
 # --- Инструменты (без изменений) ---
@@ -65,8 +64,8 @@ async def shell_privileged(command: str, confirm_dangerous: bool = False) -> dic
 @mcp.tool()
 async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
 
-# Расширенная мидлварь для логирования всего трафика
-class DebugSecurityMiddleware:
+# ASGI Middleware (Чистая проверка без блокировки стриминга)
+class SecurityMiddleware:
     def __init__(self, app):
         self.app = app
 
@@ -75,65 +74,50 @@ class DebugSecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
-        method = scope.get("method", "UNKNOWN")
-        path = scope.get("path", "UNKNOWN")
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         
-        logger.info(f"--- INCOMING REQUEST: {method} {path} ---")
-        logger.debug(f"Headers: {json.dumps(headers, indent=2)}")
-
-        # Проверка авторизации с логированием
+        # Проверка токена
         if config.auth_token:
             auth_val = headers.get("authorization", "")
-            expected = f"Bearer {config.auth_token}"
-            if auth_val != expected:
-                logger.error(f"AUTH FAILED: Got '{auth_val}', expected '{expected}'")
-                response = JSONResponse({"error": "Unauthorized", "hint": "Check Bearer token"}, status_code=401)
+            if auth_val != f"Bearer {config.auth_token}":
+                logger.error(f"AUTH FAILED: {auth_val}")
+                response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                 await response(scope, receive, send)
                 return
-            logger.info("AUTH SUCCESS")
 
-        # Перехват ответа для логирования статуса
+        # Логируем запрос (кратко)
+        logger.info(f"REQUEST: {scope['method']} {scope['path']}")
+
         async def wrapped_send(message):
             if message["type"] == "http.response.start":
-                status = message.get("status")
-                resp_headers = {k.decode(): v.decode() for k, v in message.get("headers", [])}
-                logger.info(f"--- OUTGOING RESPONSE: Status {status} ---")
-                logger.debug(f"Response Headers: {json.dumps(resp_headers, indent=2)}")
+                logger.info(f"RESPONSE: Status {message['status']}")
             await send(message)
 
-        try:
-            await self.app(scope, receive, wrapped_send)
-        except Exception as e:
-            logger.error(f"CRITICAL ERROR in request handling: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise
+        await self.app(scope, receive, wrapped_send)
 
 # Starlette App Setup
 @asynccontextmanager
 async def lifespan(app: Starlette):
     config.setup_dirs()
-    logger.info("Starting lifespan...")
-    try:
-        async with mcp.session_manager.run():
-            logger.info("MCP Session Manager is running")
-            yield
-    except Exception as e:
-        logger.error(f"Error in lifespan: {e}")
-        raise
+    async with mcp.session_manager.run():
+        yield
 
-app = Starlette(lifespan=lifespan)
+# ВАЖНО: Монтируем внутреннее приложение в корень, 
+# так как FastMCP само создает роут /mcp
 inner_mcp_app = mcp.streamable_http_app()
-
-# Монтируем с DEBUG мидлварью
-app.mount(config.endpoint, DebugSecurityMiddleware(inner_mcp_app))
+app = Starlette(lifespan=lifespan)
+app.mount("/", SecurityMiddleware(inner_mcp_app))
 
 def main():
     import uvicorn
+    # В конфиге для пользователя убираем лишний слеш, 
+    # так как FastMCP добавит /mcp сам
+    mcp_url = f"http://{config.host}:{config.port}/mcp"
+    
     mcp_config = {
         "mcpServers": {
           "android-shizuku": {
-            "url": f"http://{config.host}:{config.port}{config.endpoint}",
+            "url": mcp_url,
             "headers": { "Authorization": f"Bearer {config.auth_token}" if config.auth_token else "" }
           }
         }
@@ -144,8 +128,8 @@ def main():
     print(json.dumps(mcp_config, indent=2))
     print("="*50 + "\n")
 
-    logger.info(f"Starting uvicorn on {config.host}:{config.port}")
-    uvicorn.run(app, host=config.host, port=config.port, log_level="debug")
+    logger.info(f"Starting server on {config.host}:{config.port}")
+    uvicorn.run(app, host=config.host, port=config.port, log_level="info")
 
 if __name__ == "__main__":
     main()
