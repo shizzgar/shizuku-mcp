@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ServerConfig(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8765
-    endpoint: str = "/mcp"
+    endpoint: str = "/mcp/"
     auth_token: Optional[str] = None
     
     # Paths
