@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import os
+import subprocess
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
@@ -30,8 +31,9 @@ def get_android_pitfalls() -> str:
        On Android 15+, some background commands may timeout if the app (like Termux:API) is throttled.
        FIX: Ensure 'Unrestricted' battery mode and 'Display over other apps' is allowed.
     
-    3. COLUMN NAMES:
-       Content Provider columns vary by Android version. If a query fails, fetch all columns first to verify.
+    3. PUBLIC FILES ACCESS:
+       Files in Termux home (~/) are NOT visible to other Android apps. 
+       Always use '/sdcard/Documents/MCP/' for files intended to be opened by external apps.
     """
 
 # --- TWO POWERFUL SHELL TOOLS ---
@@ -41,12 +43,17 @@ async def termux_shell(command: str) -> dict:
     """
     [TERMUX USER CONTEXT] - Full Bash shell inside Termux.
     Use this for: 
-    - Complex data processing (Python, jq, sed, awk).
-    - Managing local files (~/) and packages (pkg/apt).
+    - Complex data processing (Python, SQLite, jq).
+    - Managing files and packages (pkg/apt).
     - Hardware access via 'termux-*' commands.
     
-    EXPERT TIP: If a system_shell command (like calendar query) returns raw data that needs 
-    complex expansion (like RRULEs), pipe the output to a Python script here.
+    ⚠️ SHARED STORAGE ACCESS:
+    - Files in '~/ ' are PRIVATE. Other apps (Markdown editors, PDF readers) CANNOT see them.
+    - For PUBLIC files, ALWAYS use: '/sdcard/Documents/MCP/'.
+    - To open a file in another app: 'termux-open /sdcard/Documents/MCP/filename.ext'
+    
+    DATA ANALYSIS:
+    - Use 'sqlite3' to analyze large dumps fetched from system_shell.
     """
     return await shell_tools.termux_shell(command=command)
 
@@ -58,10 +65,7 @@ async def system_shell(command: str) -> dict:
     - App management (am/pm), Settings, and System Diagnostics.
     - Content Provider queries (content query --uri ...).
     
-    CRITICAL PITFALL: 
-    When querying 'content://com.android.calendar/events', recurring events (birthdays, etc.) 
-    are NOT returned as individual instances. Only the original template is returned.
-    STRATEGY: Query 'rrule' column, and if not null, manually expand instances using termux_shell.
+    ENVIRONMENT: Runs as 'shell' user. Use this to fetch data, then pipe to termux_shell for analysis.
     """
     return await shell_tools.system_shell(command=command)
 
@@ -87,14 +91,27 @@ class AuthMiddleware:
                 return
         await self.app(scope, receive, send)
 
+def setup_shared_dir():
+    """Создает публичную папку для обмена файлами с Android."""
+    try:
+        path = "/sdcard/Documents/MCP"
+        os.makedirs(path, exist_ok=True)
+        logger.info(f"Shared directory ready: {path}")
+    except Exception as e:
+        logger.warning(f"Could not create shared directory on SDCard: {e}")
+
 def main():
     import uvicorn
     app = mcp.streamable_http_app()
     protected_app = AuthMiddleware(app)
+    
     print("\n" + "="*50)
-    print("READY! Multi-Shell MCP with Android Wisdom is active.")
+    print("READY! Terminal MCP with Shared Storage Support.")
     print("="*50 + "\n")
+    
     config.setup_dirs()
+    setup_shared_dir()
+    
     uvicorn.run(protected_app, host=config.host, port=config.port, log_level="info")
 
 if __name__ == "__main__":
