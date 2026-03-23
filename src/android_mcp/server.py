@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+import traceback
 from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -13,112 +14,59 @@ from src.errors import MCPError, ErrorCode
 from src.tools import doctor_tools, app_tools, intent_tools, shell_tools, screen_tools, utility_tools
 from src.artifacts import list_artifacts
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Усиленное логирование
+logging.basicConfig(
+    level=logging.DEBUG, # Ставим DEBUG для максимальной детализации
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger("android-shizuku-mcp")
 
 # Initialize FastMCP
 mcp = FastMCP("android-shizuku-mcp")
 
-# Register Tools
+# --- Инструменты (без изменений) ---
 @mcp.tool()
-async def doctor() -> dict:
-    """Provides system diagnostics and status."""
-    return await doctor_tools.doctor()
-
+async def doctor() -> dict: return await doctor_tools.doctor()
 @mcp.tool()
-async def ping() -> dict:
-    """Simple healthcheck."""
-    return await doctor_tools.ping()
-
+async def ping() -> dict: return await doctor_tools.ping()
 @mcp.tool()
 async def list_packages(third_party_only: bool = True, filter_str: str = None) -> dict:
-    """Lists installed Android packages."""
     return await app_tools.list_packages(third_party_only=third_party_only, filter_str=filter_str)
-
 @mcp.tool()
-async def open_app(package_name: str) -> dict:
-    """Opens an application by package name."""
-    return await app_tools.open_app(package_name=package_name)
-
+async def open_app(package_name: str) -> dict: return await app_tools.open_app(package_name=package_name)
 @mcp.tool()
-async def force_stop(package_name: str) -> dict:
-    """Force stops an application."""
-    return await app_tools.force_stop(package_name=package_name)
-
+async def force_stop(package_name: str) -> dict: return await app_tools.force_stop(package_name=package_name)
 @mcp.tool()
-async def start_intent(
-    action: str = None, 
-    data: str = None, 
-    package: str = None, 
-    component: str = None, 
-    extras: dict = None
-) -> dict:
-    """Starts an Android Intent."""
+async def start_intent(action: str = None, data: str = None, package: str = None, component: str = None, extras: dict = None) -> dict:
     return await intent_tools.start_intent(action, data, package, component, extras)
-
 @mcp.tool()
-async def open_url(url: str) -> dict:
-    """Opens a URL using an Android Intent."""
-    return await intent_tools.open_url(url=url)
-
+async def open_url(url: str) -> dict: return await intent_tools.open_url(url=url)
 @mcp.tool()
-async def take_screenshot() -> dict:
-    """Takes a screenshot and saves it as an artifact."""
-    return await screen_tools.take_screenshot()
-
+async def take_screenshot() -> dict: return await screen_tools.take_screenshot()
 @mcp.tool()
-async def record_screen(duration_sec: int = 10) -> dict:
-    """Records the screen for a specified duration."""
-    return await screen_tools.record_screen(duration_sec=duration_sec)
-
+async def record_screen(duration_sec: int = 10) -> dict: return await screen_tools.record_screen(duration_sec=duration_sec)
 @mcp.tool()
-async def clipboard_get() -> dict:
-    """Gets the current clipboard content."""
-    return await utility_tools.clipboard_get()
-
+async def clipboard_get() -> dict: return await utility_tools.clipboard_get()
 @mcp.tool()
-async def clipboard_set(text: str) -> dict:
-    """Sets the clipboard content."""
-    return await utility_tools.clipboard_set(text=text)
-
+async def clipboard_set(text: str) -> dict: return await utility_tools.clipboard_set(text=text)
 @mcp.tool()
-async def show_notification(title: str, content: str) -> dict:
-    """Shows an Android notification."""
-    return await utility_tools.show_notification(title=title, content=content)
-
+async def show_notification(title: str, content: str) -> dict: return await utility_tools.show_notification(title=title, content=content)
 @mcp.tool()
-async def battery_status() -> dict:
-    """Gets the battery status."""
-    return await utility_tools.battery_status()
-
+async def battery_status() -> dict: return await utility_tools.battery_status()
 @mcp.tool()
-async def wifi_status() -> dict:
-    """Gets the WiFi connection status."""
-    return await utility_tools.wifi_status()
-
+async def wifi_status() -> dict: return await utility_tools.wifi_status()
 @mcp.tool()
-async def device_info() -> dict:
-    """Gets general device information."""
-    return await utility_tools.device_info()
-
+async def device_info() -> dict: return await utility_tools.device_info()
 @mcp.tool()
-async def shell_readonly(command: str) -> dict:
-    """Runs a read-only shell command via rish."""
-    return await shell_tools.shell_readonly(command=command)
-
+async def shell_readonly(command: str) -> dict: return await shell_tools.shell_readonly(command=command)
 @mcp.tool()
 async def shell_privileged(command: str, confirm_dangerous: bool = False) -> dict:
-    """Runs a privileged shell command via rish. Requires explicit confirmation."""
     return await shell_tools.shell_privileged(command=command, confirm_dangerous=confirm_dangerous)
-
 @mcp.tool()
-async def list_artifacts_tool() -> dict:
-    """Lists saved artifacts (screenshots, recordings)."""
-    return {"ok": True, "data": list_artifacts()}
+async def list_artifacts_tool() -> dict: return {"ok": True, "data": list_artifacts()}
 
-# Pure ASGI Security Middleware (Doesn't break streaming/SSE)
-class SecurityMiddleware:
+# Расширенная мидлварь для логирования всего трафика
+class DebugSecurityMiddleware:
     def __init__(self, app):
         self.app = app
 
@@ -127,65 +75,77 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Simple manual check of headers to avoid reading body/breaking stream
-        headers = dict(scope.get("headers", []))
+        method = scope.get("method", "UNKNOWN")
+        path = scope.get("path", "UNKNOWN")
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         
-        # Check Authorization
+        logger.info(f"--- INCOMING REQUEST: {method} {path} ---")
+        logger.debug(f"Headers: {json.dumps(headers, indent=2)}")
+
+        # Проверка авторизации с логированием
         if config.auth_token:
-            auth_val = headers.get(b"authorization", b"").decode()
-            if not auth_val or auth_val != f"Bearer {config.auth_token}":
-                response = JSONResponse({"error": "Unauthorized"}, status_code=401)
+            auth_val = headers.get("authorization", "")
+            expected = f"Bearer {config.auth_token}"
+            if auth_val != expected:
+                logger.error(f"AUTH FAILED: Got '{auth_val}', expected '{expected}'")
+                response = JSONResponse({"error": "Unauthorized", "hint": "Check Bearer token"}, status_code=401)
                 await response(scope, receive, send)
                 return
+            logger.info("AUTH SUCCESS")
 
-        # Check Origin
-        origin = headers.get(b"origin", b"").decode()
-        if origin and not (origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")):
-             logger.warning(f"Request from unusual origin: {origin}")
+        # Перехват ответа для логирования статуса
+        async def wrapped_send(message):
+            if message["type"] == "http.response.start":
+                status = message.get("status")
+                resp_headers = {k.decode(): v.decode() for k, v in message.get("headers", [])}
+                logger.info(f"--- OUTGOING RESPONSE: Status {status} ---")
+                logger.debug(f"Response Headers: {json.dumps(resp_headers, indent=2)}")
+            await send(message)
 
-        await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, wrapped_send)
+        except Exception as e:
+            logger.error(f"CRITICAL ERROR in request handling: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
 # Starlette App Setup
 @asynccontextmanager
 async def lifespan(app: Starlette):
     config.setup_dirs()
-    async with mcp.session_manager.run():
-        yield
+    logger.info("Starting lifespan...")
+    try:
+        async with mcp.session_manager.run():
+            logger.info("MCP Session Manager is running")
+            yield
+    except Exception as e:
+        logger.error(f"Error in lifespan: {e}")
+        raise
 
-# We build the Starlette app and wrap it with middleware
-# The mount point should match the endpoint in config
 app = Starlette(lifespan=lifespan)
-# FastMCP streamable_http_app is already a Starlette app
 inner_mcp_app = mcp.streamable_http_app()
 
-# Mount it. If config.endpoint is "/mcp/", it handles /mcp/ and children.
-app.mount(config.endpoint, SecurityMiddleware(inner_mcp_app))
+# Монтируем с DEBUG мидлварью
+app.mount(config.endpoint, DebugSecurityMiddleware(inner_mcp_app))
 
 def main():
     import uvicorn
-    
-    # Формируем конфиг для пользователя
     mcp_config = {
         "mcpServers": {
           "android-shizuku": {
             "url": f"http://{config.host}:{config.port}{config.endpoint}",
-            "headers": {
-              "Authorization": f"Bearer {config.auth_token}" if config.auth_token else ""
-            }
+            "headers": { "Authorization": f"Bearer {config.auth_token}" if config.auth_token else "" }
           }
         }
     }
-
     print("\n" + "="*50)
-    print("READY! Copy this JSON to your MCP Client config:")
+    print("READY! Copy this JSON to RikkaHub / MCP Client:")
     print("="*50)
     print(json.dumps(mcp_config, indent=2))
-    print("="*50)
-    print(f"NOTE: For PC connection, run: adb reverse tcp:{config.port} tcp:{config.port}")
     print("="*50 + "\n")
 
-    logger.info(f"Starting Android Shizuku MCP server on {config.host}:{config.port}")
-    uvicorn.run(app, host=config.host, port=config.port)
+    logger.info(f"Starting uvicorn on {config.host}:{config.port}")
+    uvicorn.run(app, host=config.host, port=config.port, log_level="debug")
 
 if __name__ == "__main__":
     main()
