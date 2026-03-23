@@ -15,7 +15,7 @@ class ServerConfig(BaseSettings):
     logs_dir: Path = Path("logs")
     
     # Security & Features
-    enable_raw_shell: bool = False
+    enable_raw_shell: bool = True
     max_command_timeout_sec: int = 30 # Увеличим для Android 15
     allow_package_force_stop: bool = True
     allow_screenrecord: bool = True
