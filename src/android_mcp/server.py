@@ -21,48 +21,73 @@ mcp = FastMCP("android-shizuku-mcp")
 @mcp.tool()
 async def shell(command: str) -> dict:
     """
-    ULTIMATE ANDROID BASH SHELL - THE MASTER CONTROL PORTAL.
+    ULTIMATE ANDROID BASH SHELL - THE MASTER CONTROL PORTAL. Your primary tool for EVERYTHING.
     
-    1. SYSTEM ACCESS (Shizuku/ADB): 
-       - ALWAYS use 'rish -c "command"' for high-privilege Android commands.
-       - NEVER search for a 'shizuku' binary.
+    1. ARCHITECTURE & PERMISSIONS:
+       - CONTEXT: You are a Linux user inside Termux.
+       - SYSTEM ACCESS: To run high-privilege Android commands (pm, am, settings, content query, dumpsys, logcat), 
+         you MUST use the rish wrapper: 'rish -c "your_command"'.
+       - NO CLI BINARY 'shizuku': Shizuku power is accessed ONLY through 'rish -c'.
+       - DATA PROCESSING: Use local Termux tools (jq, sqlite3, python, grep, awk, sed) by piping:
+         Example: 'rish -c "pm list packages" | grep google | cut -d: -f2'
     
-    2. THE RISH-PIPE PATTERN:
-       - Pipe system data to local tools: 'rish -c "dumpsys battery" | grep level'
+    2. TERMUX:API COMPREHENSIVE REFERENCE:
+       [UI & INTERACTION]
+       - termux-toast [-c color] [-g gravity] "message"
+       - termux-notification [-t title] [-c content] [--id id] [--action "cmd"]
+       - termux-clipboard-get / termux-clipboard-set "text"
+       - termux-dialog [confirm|checkbox|counter|date|radio|sheet|spinner|text|time]
+       [HARDWARE & SENSORS]
+       - termux-battery-status (Returns JSON: percentage, temperature, health)
+       - termux-torch [on|off] (Toggle flashlight)
+       - termux-vibrate [-d duration_ms] [-f]
+       - termux-brightness [0-255]
+       - termux-location [-p gps|network|passive] [-r last|updates|once]
+       - termux-sensor -s [sensor_name] -n 1 (Get gyro, accel, etc.)
+       [TELEPHONY & CONNECTIVITY]
+       - termux-sms-list [-l limit] [-n] (Get SMS messages)
+       - termux-sms-send -n number "message"
+       - termux-contact-list (Returns JSON contacts)
+       - termux-call-log [-l limit]
+       - termux-telephony-call <number>
+       - termux-wifi-connectioninfo / termux-wifi-scaninfo
+       [MULTIMEDIA]
+       - termux-camera-photo [-c camera_id] <file.jpg>
+       - termux-microphone-record [-d duration] [-f file.mp3]
+       - termux-media-player [play|pause|stop|info] <file>
+       [STORAGE & SAF]
+       - termux-saf-ls / termux-saf-read / termux-saf-write (Access SD Card without root)
     
-    3. CONTENT PROVIDERS (READ-ONLY IN ANDROID 15+):
-       - Use 'content query --uri <URI>'. (Always test with --limit 1 first to check columns).
-       - WRITING (content insert/update) to protected DBs (Contacts, Calendar) usually FAILS due to SELinux/UID limits.
+    3. ANDROID CONTENT PROVIDERS (THE GOLD MINE):
+       - URI FORMAT: Calendar='content://com.android.calendar/events', SMS='content://sms/inbox', Contacts='content://contacts/people'.
+       - COLUMN DISCOVERY: URIs and columns change between Samsung/Pixel. 
+         ALWAYS run: 'rish -c "content query --uri <URI> --limit 1"' first to see valid column names.
+       - CALENDAR SECRETS: 
+         * Use columns: 'dtstart', 'dtend', 'title', 'rrule'. (NOT begin/end).
+         * Recurring events (birthdays) are NOT returned by date filters on 'dtstart'. 
+         * STRATEGY: Query 'rrule IS NOT NULL', then use Python in this shell to expand instances.
     
-    4. ADVANCED FALLBACKS (WHEN APIS/DATABASES ARE BLOCKED):
-       If you cannot write to a database programmatically, act like a human:
-       
-       A. DEEP INTENTS: Pre-fill UI forms so the user just taps 'Save'.
-          Example (Contact): 'rish -c "am start -a android.intent.action.INSERT -t vnd.android.cursor.dir/contact -e name 'John Doe' -e phone '123456789'"'
-          Example (Calendar): 'rish -c "am start -a android.intent.action.INSERT -t vnd.android.cursor.item/event -e title 'Meeting' -e beginTime 1774251000000"'
-       
-       B. UI AUTOMATION (Blind/Coordinates): 
-          - Dump screen: 'rish -c "uiautomator dump /sdcard/Documents/MCP/dump.xml"'
-          - Read XML to find bounds [x1,y1][x2,y2] of buttons.
-          - Tap: 'rish -c "input tap <X> <Y>"'
-          - Type: 'rish -c "input text 'Hello'"'
-          - Keypress: 'rish -c "input keyevent <KEYCODE>"' (e.g., 3=HOME, 4=BACK, 66=ENTER).
+    4. ADVANCED FALLBACKS (UI AUTOMATION):
+       If programmatic access fails, act like a human using UI Automator.
+       NEVER parse dump.xml with grep! Use Python's xml.etree.ElementTree.
+       Workflow:
+       1. 'rish -c "uiautomator dump /sdcard/dump.xml"'
+       2. Use Python to parse bounds '[x1,y1][x2,y2]' of the target node (e.g., text="Save").
+       3. Calculate center: x=(x1+x2)/2, y=(y1+y2)/2
+       4. Tap: 'rish -c "input tap x y"'
     
-    5. TERMUX:API HARDWARE CAPABILITIES:
-       - UI: termux-toast, termux-notification, termux-dialog, termux-clipboard-get/set
-       - HW: termux-battery-status, termux-location, termux-torch, termux-sensor
-       - TELEPHONY: termux-sms-list, termux-contact-list, termux-call-log
+    5. FILESYSTEM & INTER-APP SHARING:
+       - PRIVATE: '~/ ' (HOME) is invisible to other apps.
+       - PUBLIC: '/sdcard/Documents/MCP/'. Use this for files (Markdown, PDF, Logs) intended for Android apps.
+       - OPENING: Use 'termux-open /sdcard/Documents/MCP/file.pdf' to launch the default Android viewer.
     
     6. SILENT EXECUTION (CRITICAL):
        - DO NOT use 'echo' to print human-readable explanations, ASCII art, or progress updates.
        - The user DOES NOT SEE the terminal output. The output goes back to YOU.
        - Output ONLY raw data (JSON, paths, IDs) that you need for your next step.
-       - NEVER print things like "=== Report ===" or "Step 1: Doing something".
     
-    7. STORAGE & LIMITS:
-       - PRIVATE: '~/ '
-       - SHARED: '/sdcard/Documents/MCP/' (Use this for dumps/files for other apps).
-       - Output > 30k chars is truncated and saved to '~/artifacts/'. Use 'grep'!
+    7. EXECUTION & LIMITS:
+       - TRUNCATION: Output > 30,000 chars is saved to '~/artifacts/' and truncated in your view.
     """
     return await shell_tools.execute_android_shell(command=command)
 
