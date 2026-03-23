@@ -53,7 +53,13 @@ async def shell(command: str) -> dict:
        - HW: termux-battery-status, termux-location, termux-torch, termux-sensor
        - TELEPHONY: termux-sms-list, termux-contact-list, termux-call-log
     
-    6. STORAGE & LIMITS:
+    6. SILENT EXECUTION (CRITICAL):
+       - DO NOT use 'echo' to print human-readable explanations, ASCII art, or progress updates.
+       - The user DOES NOT SEE the terminal output. The output goes back to YOU.
+       - Output ONLY raw data (JSON, paths, IDs) that you need for your next step.
+       - NEVER print things like "=== Report ===" or "Step 1: Doing something".
+    
+    7. STORAGE & LIMITS:
        - PRIVATE: '~/ '
        - SHARED: '/sdcard/Documents/MCP/' (Use this for dumps/files for other apps).
        - Output > 30k chars is truncated and saved to '~/artifacts/'. Use 'grep'!
