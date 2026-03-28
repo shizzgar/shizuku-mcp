@@ -4,6 +4,7 @@ from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
 from src.config import config
+from src.errors import MCPError, ErrorCode
 from src.tools import shell_tools
 from src.artifacts import list_artifacts as list_saved_artifacts
 
@@ -39,17 +40,26 @@ async def shell(
     For incremental reads, pass `from_stdout_offset` and/or `from_stderr_offset`.
     Prefer narrowing with `head`, `tail`, `sed -n`, `rg`, `jq`, or redirects.
     """
-    return await shell_tools.execute_android_shell(
-        command=command,
-        privilege_mode=privilege_mode,
-        timeout_sec=timeout_sec,
-        output_budget_chars=output_budget_chars,
-        continuation=continuation,
-        job_id=job_id,
-        cwd=cwd,
-        from_stdout_offset=from_stdout_offset,
-        from_stderr_offset=from_stderr_offset,
-    )
+    try:
+        return await shell_tools.execute_android_shell(
+            command=command,
+            privilege_mode=privilege_mode,
+            timeout_sec=timeout_sec,
+            output_budget_chars=output_budget_chars,
+            continuation=continuation,
+            job_id=job_id,
+            cwd=cwd,
+            from_stdout_offset=from_stdout_offset,
+            from_stderr_offset=from_stderr_offset,
+        )
+    except MCPError as exc:
+        return exc.to_dict()
+    except Exception as exc:
+        return MCPError(
+            ErrorCode.INTERNAL_ERROR,
+            "shell execution failed",
+            details={"error": str(exc)},
+        ).to_dict()
 
 # --- SERVICE TOOLS ---
 

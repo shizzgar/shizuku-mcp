@@ -28,7 +28,13 @@ class RishRunner:
                     self._rish_path = path
                     return path
 
-        raise MCPError(ErrorCode.RISH_NOT_FOUND, "rish not found. Please setup Shizuku rish.")
+        raise MCPError(
+            ErrorCode.RISH_NOT_FOUND,
+            "rish not found",
+            details={"searched_paths": [p for p in search_paths if p]},
+            retryable=False,
+            suggested_next_action="Install or configure rish in Termux.",
+        )
 
     async def check_shizuku(self) -> bool:
         try:

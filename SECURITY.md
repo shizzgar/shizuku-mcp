@@ -1,28 +1,31 @@
-# Security Policy
+# Security Notes
 
-`android-shizuku-mcp` is designed to be as secure as possible while providing powerful device control.
+`android-shizuku-mcp` is intentionally optimized for low-friction command execution by an LLM running close to the device. It is not a hardened shell sandbox.
 
-## Implemented Protections
+## What Is Actually Implemented
 
-1.  **Local Bind Only**: The server is bound to `127.0.0.1` by default, making it inaccessible from other devices on the same network.
-2.  **Bearer Token Authentication**: All requests require a valid `Authorization: Bearer <token>` header if `MCP_AUTH_TOKEN` is set.
-3.  **Origin Check**: Basic protection against DNS rebinding and cross-origin requests from the browser.
-4.  **Shell Filtering**:
-    *   **Blacklist**: Commands like `rm -rf /`, `su`, `sudo`, `reboot` are explicitly blocked.
-    *   **Whitelist**: `shell_readonly` only allows specific safe patterns.
-    *   **Explicit Confirmation**: `shell_privileged` requires a `confirm_dangerous=true` argument and is disabled by default.
-5.  **Environment Isolation**: `RISH_PRESERVE_ENV=0` is used to prevent Termux environment leakage into the high-privilege shell.
-6.  **Android 14+ Protections**: Automated warnings for writable `rish` files, which are a security risk on newer Android versions.
+1. **Localhost-by-default bind**: the server starts on `127.0.0.1` by default.
+2. **Optional bearer token**: requests can require `Authorization: Bearer <token>` when `MCP_AUTH_TOKEN` is set.
+3. **Minimal shell denylist**: a small set of obviously destructive patterns is blocked.
+4. **Environment isolation for `rish`**: `RISH_PRESERVE_ENV=0` is used for privileged shell execution.
+5. **Runtime job retention**: job files are rotated and cleaned up to reduce stale runtime buildup.
 
-## Recommendations
+## Important Non-Goals
 
-1.  **Use a strong token**: The default `install.sh` generates a random 16-character hex token. Keep it secret.
-2.  **Keep Shizuku updated**: Newer versions of Shizuku have better security fixes.
-3.  **Audit Logs**: Regularly check the `logs/` directory for any unusual tool calls.
-4.  **Restrict Termux Permissions**: Only grant the permissions strictly necessary for your use case (e.g., storage, if needed).
+1. **No strict shell sandbox**: the universal `shell` tool is designed to stay permissive.
+2. **No strong command policy boundary**: the denylist reduces accidents, but shell access is still powerful.
+3. **No claim of browser-grade Origin protection**: do not assume cross-origin protections that are not implemented in code.
+
+## Operational Recommendations
+
+1. Keep the server bound to localhost unless you have a very specific reason not to.
+2. Set a bearer token if any other local client could reach the server.
+3. Treat `rish` access as privileged device control.
+4. Review saved stdout/stderr artifacts and runtime files if you are debugging odd agent behavior.
+5. Only grant Termux and Shizuku the permissions you actually need.
 
 ## Known Limitations
 
-*   **ADB-mode Shizuku**: While ADB is powerful, it is less secure than root as it bypasses some Android security features.
-*   **Shell Redirection**: Even with blacklists, shell access via `rish` is inherently powerful. Disable `enable_raw_shell` if you don't need it.
-*   **Artifact Exposure**: Anyone with local access to the Termux home directory can read the screenshots and recordings.
+1. A small-context LLM can still issue dangerous shell commands if prompted to do so.
+2. Anyone with local access to the Termux home directory can inspect saved artifacts and runtime job files.
+3. Shell output truncation and shaping improve usability, not security.

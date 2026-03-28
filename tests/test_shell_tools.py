@@ -4,8 +4,9 @@ import time
 from pathlib import Path
 
 from src.config import config
+from src.errors import ErrorCode, MCPError
 from src.runners import subprocess_runner
-from src.runners.subprocess_runner import JobSnapshot, build_output_preview
+from src.runners.subprocess_runner import JobSnapshot, build_output_preview, read_output_delta
 from src.tools.shell_tools import execute_android_shell
 
 
@@ -31,6 +32,18 @@ def test_build_output_preview_samples_large_output(tmp_path):
     assert preview.sections[-1]["text"].strip().endswith("C")
 
 
+def test_build_output_preview_detects_json_output(tmp_path):
+    _configure_runtime(tmp_path)
+    path = tmp_path / "data.json"
+    path.write_text("{\"ok\": true, \"items\": [1, 2, 3], \"name\": \"demo\"}", encoding="utf-8")
+
+    preview = build_output_preview(path, total_bytes=path.stat().st_size, inline_budget=400, section_budget=120)
+
+    assert preview.kind == "json"
+    assert preview.json_summary is not None
+    assert preview.json_summary["summary_type"] == "object"
+
+
 def test_shell_returns_sampled_output_for_large_stdout(tmp_path):
     _configure_runtime(tmp_path)
 
@@ -49,6 +62,18 @@ def test_shell_returns_sampled_output_for_large_stdout(tmp_path):
     assert data["stdout"]["truncated"] is True
     assert data["stdout"]["strategy"] in {"head_tail", "head_middle_tail"}
     assert Path(data["artifacts"]["stdout_path"]).exists()
+
+
+def test_read_output_delta_reports_empty_delta(tmp_path):
+    _configure_runtime(tmp_path)
+    path = tmp_path / "delta.txt"
+    path.write_text("hello\n", encoding="utf-8")
+
+    preview = read_output_delta(path, total_bytes=path.stat().st_size, start_offset=path.stat().st_size, inline_budget=100)
+
+    assert preview.kind == "empty"
+    assert preview.message == "no new output"
+    assert preview.next_offset == path.stat().st_size
 
 
 def test_shell_continues_long_running_job_with_offsets(tmp_path):
@@ -134,3 +159,18 @@ def test_stale_job_becomes_lost_after_instance_change(tmp_path):
     assert found.status == "lost"
     assert found.finish_reason == "orphaned"
     assert found.owner_id != subprocess_runner.SERVER_INSTANCE_ID
+
+
+def test_mcperror_to_dict_contains_normalized_fields():
+    error = MCPError(
+        ErrorCode.INVALID_ARGUMENT,
+        "bad args",
+        details={"field": "job_id"},
+    )
+
+    payload = error.to_dict()
+
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["retryable"] is False
+    assert payload["error"]["suggested_next_action"]

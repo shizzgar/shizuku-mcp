@@ -27,6 +27,7 @@ class StreamStats:
 class OutputPreview:
     mode: str
     strategy: str
+    kind: str
     inline: Optional[str]
     truncated: bool
     has_more: bool
@@ -35,12 +36,21 @@ class OutputPreview:
     next_offset: int
     total_bytes: int
     path: str
+    message: Optional[str]
+    char_count_estimate: Optional[int]
+    line_count_estimate: Optional[int]
+    nonempty_line_count_estimate: Optional[int]
+    first_lines: List[str]
+    last_lines: List[str]
+    sample_lines: List[str]
+    json_summary: Optional[Dict[str, Any]]
     sections: List[Dict[str, str]]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
             "strategy": self.strategy,
+            "kind": self.kind,
             "inline": self.inline,
             "truncated": self.truncated,
             "has_more": self.has_more,
@@ -49,6 +59,14 @@ class OutputPreview:
             "next_offset": self.next_offset,
             "total_bytes": self.total_bytes,
             "path": self.path,
+            "message": self.message,
+            "char_count_estimate": self.char_count_estimate,
+            "line_count_estimate": self.line_count_estimate,
+            "nonempty_line_count_estimate": self.nonempty_line_count_estimate,
+            "first_lines": self.first_lines,
+            "last_lines": self.last_lines,
+            "sample_lines": self.sample_lines,
+            "json_summary": self.json_summary,
             "sections": self.sections,
         }
 
@@ -230,6 +248,128 @@ def _read_text_slice(
     return text, start_offset + len(raw)
 
 
+def _estimate_line_metrics(path: Path) -> Tuple[int, int]:
+    if not path.exists():
+        return 0, 0
+
+    line_count = 0
+    nonempty_line_count = 0
+    carry = b""
+
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            merged = carry + chunk
+            parts = merged.split(b"\n")
+            carry = parts.pop()
+            for part in parts:
+                line_count += 1
+                if part.strip():
+                    nonempty_line_count += 1
+
+    if carry:
+        line_count += 1
+        if carry.strip():
+            nonempty_line_count += 1
+
+    return line_count, nonempty_line_count
+
+
+def _collect_lines(text: str, limit: int = 3) -> List[str]:
+    return [line for line in text.splitlines() if line][:limit]
+
+
+def _collect_last_lines(text: str, limit: int = 3) -> List[str]:
+    lines = [line for line in text.splitlines() if line]
+    return lines[-limit:]
+
+
+def _compact_json_value(value: Any, max_items: int = 5, depth: int = 0) -> Any:
+    if depth >= 2:
+        if isinstance(value, dict):
+            return {"type": "object", "keys": len(value)}
+        if isinstance(value, list):
+            return {"type": "array", "items": len(value)}
+        return value
+
+    if isinstance(value, dict):
+        items = list(value.items())[:max_items]
+        return {key: _compact_json_value(item, max_items=max_items, depth=depth + 1) for key, item in items}
+    if isinstance(value, list):
+        return [_compact_json_value(item, max_items=max_items, depth=depth + 1) for item in value[:max_items]]
+    return value
+
+
+def _json_summary_from_text(text: str) -> Optional[Dict[str, Any]]:
+    candidate = text.strip()
+    if not candidate or candidate[0] not in "[{":
+        return None
+
+    try:
+        parsed = json.loads(candidate)
+    except Exception:
+        return None
+
+    if isinstance(parsed, dict):
+        return {
+            "summary_type": "object",
+            "key_count": len(parsed),
+            "preview": _compact_json_value(parsed),
+        }
+    if isinstance(parsed, list):
+        return {
+            "summary_type": "array",
+            "item_count": len(parsed),
+            "preview": _compact_json_value(parsed),
+        }
+    return {
+        "summary_type": type(parsed).__name__,
+        "preview": parsed,
+    }
+
+
+def _enrich_preview(preview: OutputPreview) -> OutputPreview:
+    preview.char_count_estimate = preview.total_bytes
+
+    if preview.kind == "empty":
+        return preview
+
+    candidate_text = preview.inline
+    if candidate_text is None:
+        candidate_text = "\n".join(section["text"] for section in preview.sections if section.get("text"))
+
+    json_summary = _json_summary_from_text(candidate_text or "")
+    if json_summary is not None:
+        preview.kind = "json"
+        preview.json_summary = json_summary
+        return preview
+
+    line_count, nonempty_line_count = _estimate_line_metrics(Path(preview.path))
+    preview.line_count_estimate = line_count
+    preview.nonempty_line_count_estimate = nonempty_line_count
+
+    if line_count > 1:
+        preview.kind = "lines"
+        if preview.inline is not None:
+            preview.first_lines = _collect_lines(preview.inline)
+            preview.last_lines = _collect_last_lines(preview.inline)
+            preview.sample_lines = preview.first_lines[:]
+            return preview
+
+        head_text = next((section["text"] for section in preview.sections if section["position"] == "head"), "")
+        tail_text = next((section["text"] for section in preview.sections if section["position"] == "tail"), "")
+        middle_text = next((section["text"] for section in preview.sections if section["position"] == "middle"), "")
+        preview.first_lines = _collect_lines(head_text)
+        preview.last_lines = _collect_last_lines(tail_text)
+        preview.sample_lines = _collect_lines(middle_text or head_text)
+        return preview
+
+    preview.kind = "text"
+    return preview
+
+
 def build_output_preview(
     path: Path,
     total_bytes: int,
@@ -243,6 +383,7 @@ def build_output_preview(
         return OutputPreview(
             mode="inline",
             strategy="inline",
+            kind="text",
             inline="",
             truncated=False,
             has_more=False,
@@ -251,14 +392,23 @@ def build_output_preview(
             next_offset=0,
             total_bytes=0,
             path=str(path),
+            message=None,
+            char_count_estimate=0,
+            line_count_estimate=0,
+            nonempty_line_count_estimate=0,
+            first_lines=[],
+            last_lines=[],
+            sample_lines=[],
+            json_summary=None,
             sections=[],
         )
 
     if total_bytes <= inline_budget:
         inline, end_offset = _read_text_slice(path, 0, inline_budget, total_bytes, line_aware=False)
-        return OutputPreview(
+        return _enrich_preview(OutputPreview(
             mode="inline",
             strategy="inline",
+            kind="text",
             inline=inline,
             truncated=False,
             has_more=False,
@@ -267,8 +417,16 @@ def build_output_preview(
             next_offset=total_bytes,
             total_bytes=total_bytes,
             path=str(path),
+            message=None,
+            char_count_estimate=None,
+            line_count_estimate=None,
+            nonempty_line_count_estimate=None,
+            first_lines=[],
+            last_lines=[],
+            sample_lines=[],
+            json_summary=None,
             sections=[],
-        )
+        ))
 
     head_text, _ = _read_text_slice(path, 0, section_budget, total_bytes)
     sections = [{"position": "head", "text": head_text}]
@@ -283,9 +441,10 @@ def build_output_preview(
     tail_text, tail_end = _read_text_slice(path, tail_offset, section_budget, total_bytes)
     sections.append({"position": "tail", "text": tail_text})
 
-    return OutputPreview(
+    return _enrich_preview(OutputPreview(
         mode="sample",
         strategy="head_middle_tail" if len(sections) == 3 else "head_tail",
+        kind="text",
         inline=None,
         truncated=True,
         has_more=False,
@@ -294,8 +453,16 @@ def build_output_preview(
         next_offset=total_bytes,
         total_bytes=total_bytes,
         path=str(path),
+        message=None,
+        char_count_estimate=None,
+        line_count_estimate=None,
+        nonempty_line_count_estimate=None,
+        first_lines=[],
+        last_lines=[],
+        sample_lines=[],
+        json_summary=None,
         sections=sections,
-    )
+    ))
 
 
 def read_output_delta(
@@ -311,6 +478,7 @@ def read_output_delta(
         return OutputPreview(
             mode="delta",
             strategy="delta",
+            kind="empty",
             inline="",
             truncated=False,
             has_more=False,
@@ -319,14 +487,23 @@ def read_output_delta(
             next_offset=bounded_start,
             total_bytes=total_bytes,
             path=str(path),
+            message="no new output",
+            char_count_estimate=total_bytes,
+            line_count_estimate=None,
+            nonempty_line_count_estimate=None,
+            first_lines=[],
+            last_lines=[],
+            sample_lines=[],
+            json_summary=None,
             sections=[],
         )
 
     inline, end_offset = _read_text_slice(path, bounded_start, inline_budget, total_bytes, line_aware=False)
     has_more = end_offset < total_bytes
-    return OutputPreview(
+    return _enrich_preview(OutputPreview(
         mode="delta",
         strategy="delta",
+        kind="text",
         inline=inline,
         truncated=has_more,
         has_more=has_more,
@@ -335,8 +512,16 @@ def read_output_delta(
         next_offset=end_offset,
         total_bytes=total_bytes,
         path=str(path),
+        message=None,
+        char_count_estimate=None,
+        line_count_estimate=None,
+        nonempty_line_count_estimate=None,
+        first_lines=[],
+        last_lines=[],
+        sample_lines=[],
+        json_summary=None,
         sections=[],
-    )
+    ))
 
 
 def _job_size(snapshot: JobSnapshot) -> int:
@@ -552,7 +737,13 @@ class CommandJobManager:
     async def wait_for(self, job_id: str, timeout: int) -> JobSnapshot:
         job = self._jobs.get(job_id)
         if job is None:
-            raise MCPError(ErrorCode.INVALID_ARGUMENT, "Unknown job_id", {"job_id": job_id})
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "unknown job_id",
+                {"job_id": job_id},
+                retryable=False,
+                suggested_next_action="Use an existing job_id or start a new command.",
+            )
 
         try:
             await asyncio.wait_for(job.process.wait(), timeout=timeout)
@@ -570,7 +761,13 @@ class CommandJobManager:
 
         _, _, meta_path = self._job_paths(job_id)
         if not meta_path.exists():
-            raise MCPError(ErrorCode.INVALID_ARGUMENT, "Unknown job_id", {"job_id": job_id})
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "unknown job_id",
+                {"job_id": job_id},
+                retryable=False,
+                suggested_next_action="Use an existing job_id or start a new command.",
+            )
 
         snapshot = JobSnapshot(**json.loads(meta_path.read_text(encoding="utf-8")))
         if snapshot.status == "running" and snapshot.owner_id != SERVER_INSTANCE_ID:
@@ -662,7 +859,13 @@ async def run_command(
                 process.kill()
             except ProcessLookupError:
                 pass
-            raise MCPError(ErrorCode.COMMAND_TIMEOUT, "Command timed out", {"command": cmd_str}) from exc
+            raise MCPError(
+                ErrorCode.COMMAND_TIMEOUT,
+                "command timed out",
+                {"command": cmd_str},
+                retryable=True,
+                suggested_next_action="Poll the job again or narrow the command.",
+            ) from exc
 
         await asyncio.gather(stdout_task, stderr_task)
 
@@ -677,7 +880,13 @@ async def run_command(
     except MCPError:
         raise
     except Exception as exc:
-        raise MCPError(ErrorCode.COMMAND_FAILED, str(exc), {"command": cmd_str}) from exc
+        raise MCPError(
+            ErrorCode.COMMAND_FAILED,
+            "command execution failed",
+            {"command": cmd_str, "error": str(exc)},
+            retryable=True,
+            suggested_next_action="Inspect stderr or rerun a narrower command.",
+        ) from exc
 
 
 async def run_command_binary(
@@ -700,4 +909,10 @@ async def run_command_binary(
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         return process.returncode or 0, stdout, stderr
     except Exception as exc:
-        raise MCPError(ErrorCode.COMMAND_FAILED, str(exc)) from exc
+        raise MCPError(
+            ErrorCode.COMMAND_FAILED,
+            "binary command failed",
+            {"error": str(exc)},
+            retryable=True,
+            suggested_next_action="Retry the command or inspect the server logs.",
+        ) from exc

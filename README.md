@@ -6,12 +6,12 @@ An open-source Model Context Protocol (MCP) server for Android, running in Termu
 
 * **Streamable HTTP Transport**: Modern MCP transport for robust communication.
 * **Single Universal Shell Tool**: One MCP tool for Termux and `rish`, designed for small-context LLMs.
-* **Adaptive Output Sampling**: Large output is stored on disk and returned as head/middle/tail previews.
+* **Adaptive Output Shaping**: Large output is returned as compact JSON, line-aware, or text previews instead of giant dumps.
 * **Long-Running Job Continuations**: Commands that exceed the sync budget return a `job_id` instead of hard-failing.
 * **Incremental Output Reads**: Follow-up calls can continue from `stdout`/`stderr` byte offsets.
 * **Job Control**: Running jobs can be cancelled through the same `shell` tool.
 * **Shizuku Integration**: High-privilege Android commands can be routed through `rish`.
-* **Security-focused**: Localhost binding, Bearer token auth, and Origin checks.
+* **Low-Context UX**: Error payloads stay short and operational for weak LLMs.
 * **Artifact Management**: Command stdout/stderr are persisted for follow-up inspection.
 
 ## Prerequisites
@@ -61,7 +61,7 @@ Or connect via HTTP directly using an MCP client supporting Streamable HTTP.
 
 ## Available Tools
 
-* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, cancel jobs, and return compact previews or incremental output slices via offsets.
+* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, cancel jobs, and return compact JSON, line-aware, text, or empty-delta previews.
 * **System**: `doctor`
 * **Artifacts**: `list_artifacts`
 
@@ -71,10 +71,10 @@ Run `./setup_boot.sh` to create a Termux:Boot script. Ensure the Termux:Boot app
 
 ## Security
 
-* Bind only to `127.0.0.1`.
-* Bearer token authentication (optional but recommended).
-* Explicit denylist for obviously destructive shell commands.
-* Large outputs are sampled to protect LLM context windows.
+* Bind to `127.0.0.1` unless you intentionally expose the server another way.
+* Bearer token authentication is supported and recommended.
+* The shell denylist is minimal and should not be treated as a hard security boundary.
+* The server is optimized for low-friction command execution and low-context responses, not strict shell sandboxing.
 
 ## License
 

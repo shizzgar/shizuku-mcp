@@ -36,7 +36,12 @@ class TermuxApiRunner:
 
     async def run_api(self, command_args: List[str], timeout: Optional[int] = None) -> Tuple[int, str, str]:
         if not await self._check_availability():
-            raise MCPError(ErrorCode.TERMUX_API_NOT_AVAILABLE, "Termux:API not found. Run 'pkg install termux-api' in Termux.")
+            raise MCPError(
+                ErrorCode.TERMUX_API_NOT_AVAILABLE,
+                "termux-api not available",
+                retryable=False,
+                suggested_next_action="Install the Termux:API app and package.",
+            )
         
         return await run_command(command_args, timeout=timeout)
 

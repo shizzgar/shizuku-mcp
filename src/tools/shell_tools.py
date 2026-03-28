@@ -127,7 +127,13 @@ async def _resolve_execution_backend(
     return "rish", [rish_path, "-c", remote_command], env, None
 
 
-def _next_action_hint(status: str, finish_reason: Optional[str], stdout_preview: Dict[str, Any], stderr_preview: Dict[str, Any]) -> str:
+def _next_action_hint(
+    status: str,
+    finish_reason: Optional[str],
+    primary_stream: str,
+    stdout_preview: Dict[str, Any],
+    stderr_preview: Dict[str, Any],
+) -> str:
     if status == "running":
         return "Command is still running. Call shell again with continuation='continue' and the same job_id."
 
@@ -142,6 +148,12 @@ def _next_action_hint(status: str, finish_reason: Optional[str], stdout_preview:
 
     if finish_reason == "failed":
         return "Command exited with a non-zero code. Inspect stderr or rerun a narrower diagnostic command."
+
+    if primary_stream == "stderr" and stderr_preview.get("total_bytes", 0) > 0:
+        return "stderr contains the useful output. Inspect stderr before rerunning the command."
+
+    if stdout_preview.get("kind") == "empty" and stderr_preview.get("kind") == "empty":
+        return "No new output since the provided offsets. Poll again later or inspect saved artifacts."
 
     if stdout_preview.get("truncated") or stderr_preview.get("truncated"):
         stdout_path = stdout_preview.get("path")
@@ -172,6 +184,21 @@ def _stream_payload(
         start_offset=from_offset,
         inline_budget=output_budget_chars,
     ).to_dict()
+
+
+def _primary_stream(stdout_preview: Dict[str, Any], stderr_preview: Dict[str, Any], finish_reason: Optional[str]) -> str:
+    stdout_bytes = stdout_preview.get("total_bytes", 0)
+    stderr_bytes = stderr_preview.get("total_bytes", 0)
+
+    if stderr_bytes == 0 and stdout_bytes == 0:
+        return "none"
+    if stderr_bytes > 0 and stdout_bytes == 0:
+        return "stderr"
+    if finish_reason in {"failed", "killed_by_timeout"} and stderr_bytes > 0:
+        return "stderr"
+    if stderr_preview.get("kind") == "json" and stdout_preview.get("kind") != "json":
+        return "stderr"
+    return "stdout"
 
 
 async def execute_android_shell(
@@ -242,6 +269,7 @@ async def execute_android_shell(
         from_offset=from_stderr_offset,
     )
 
+    primary_stream = _primary_stream(stdout_preview, stderr_preview, snapshot.finish_reason)
     job_state = "active" if snapshot.status == "running" and snapshot.owner_id == SERVER_INSTANCE_ID else "stale" if snapshot.status == "lost" else "terminal"
 
     return {
@@ -259,6 +287,7 @@ async def execute_android_shell(
             "pid": snapshot.pid,
             "exit_code": snapshot.exit_code,
             "duration_ms": snapshot.duration_ms,
+            "primary_stream": primary_stream,
             "stdout": stdout_preview,
             "stderr": stderr_preview,
             "offsets": {
@@ -269,6 +298,6 @@ async def execute_android_shell(
                 "stdout_path": snapshot.stdout_path,
                 "stderr_path": snapshot.stderr_path,
             },
-            "next_action_hint": _next_action_hint(snapshot.status, snapshot.finish_reason, stdout_preview, stderr_preview),
+            "next_action_hint": _next_action_hint(snapshot.status, snapshot.finish_reason, primary_stream, stdout_preview, stderr_preview),
         },
     }

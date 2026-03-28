@@ -1,40 +1,39 @@
 # Architecture
 
-`android-shizuku-mcp` is a modular MCP server designed for Android environments, specifically Termux.
+`android-shizuku-mcp` is a Termux-hosted MCP server built around one main universal shell tool.
 
 ## Core Components
 
-1.  **MCP Layer (`src/mcp/`)**:
-    *   Uses `FastMCP` (higher level) but with a custom Starlette wrapper for security middleware.
-    *   Exposes tools via the MCP protocol.
-    *   Supports Streamable HTTP transport.
+1. **MCP layer**
+   `src/android_mcp/server.py` exposes the Streamable HTTP server, bearer-token middleware, and the public tools.
 
-2.  **Tool Registry (`src/tools/`)**:
-    *   Groups tools by functional areas: `doctor`, `apps`, `intents`, `screen`, `utility`, `shell`.
-    *   Tools are asynchronous and handle error mapping to `MCPError`.
+2. **Primary shell tool**
+   `src/tools/shell_tools.py` is the main LLM-facing control surface.
+   It validates shell arguments, chooses `termux` or `rish`, starts or resumes jobs, and returns compact structured results.
 
-3.  **Runners (`src/runners/`)**:
-    *   **Subprocess Runner**: Low-level `asyncio.create_subprocess_exec` wrapper with timeout and capture.
-    *   **Rish Runner**: Handles Shizuku/rish execution, environment variables (`RISH_PRESERVE_ENV`), and path discovery.
-    *   **Termux API Runner**: Handles interactions with the `termux-api` commands.
+3. **Execution runners**
+   `src/runners/subprocess_runner.py` handles subprocess creation, spool files, job persistence, output shaping, offsets, cancellations, and runtime cleanup.
+   `src/runners/rish_runner.py` handles privileged execution through `rish`.
+   `src/runners/termux_api_runner.py` handles `termux-api` binaries.
 
-4.  **Health Module (`src/doctor.py`)**:
-    *   Aggregates system status, tool availability, and security warnings.
-
-5.  **Artifacts Module (`src/artifacts.py`)**:
-    *   Manages file-based outputs (screenshots, recordings) within a dedicated directory.
+4. **Health and artifacts**
+   `src/doctor.py` reports environment health and runtime job statistics.
+   `src/artifacts.py` manages saved artifacts and metadata.
 
 ## Execution Flow
 
-1.  Client connects via HTTP to `http://127.0.0.1:8765/mcp`.
-2.  Security middleware validates Bearer token and Origin.
-3.  FastMCP routes tool calls to the corresponding tool function.
-4.  Tool function invokes a Runner (Subprocess/Rish/Termux API).
-5.  Runner executes the command on Android and returns structured result.
-6.  Result is JSON-serialized and returned to the client.
+1. A client calls the `shell` MCP tool.
+2. The shell layer validates the request and selects a backend: local Termux shell or `rish`.
+3. The subprocess runner starts a job and streams stdout/stderr into spool files.
+4. The shell layer returns a compact response:
+   `json`, `lines`, `text`, or `empty` preview shape,
+   offsets for incremental reads,
+   job state and finish reason when available.
+5. Follow-up calls continue, cancel, or inspect the same job without needing large inline output.
 
-## Security Boundaries
+## Design Priorities
 
-*   **Safe Tools**: Native Python or `termux-api` actions.
-*   **Privileged Tools**: Actions requiring `rish` (app management, intents, screen capture).
-*   **Dangerous Tools**: Raw shell access via `rish` (disabled by default, requires whitelist and confirmation).
+1. **One dominant tool** instead of a wide MCP surface.
+2. **Low-context responses** for weak or small-window LLMs.
+3. **Permissive execution** over heavy command policy.
+4. **Recoverable long-running work** through jobs, offsets, and resumable responses.
