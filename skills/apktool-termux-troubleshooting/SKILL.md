@@ -25,6 +25,7 @@ Use this skill when the reverse workflow is blocked by rebuild, packaging, signi
 ## High-value rules
 
 - For apktool 3.x, use `--aapt`, not `-a`.
+- If the reverse-flow helper script is available, prefer it over retyping the full Termux rebuild command.
 - If `aapt2` works directly but apktool still fails, verify what apktool actually invokes before blaming the binary.
 - Resource compile errors are usually local to one XML/file name/value, not the whole project.
 - Keep build logs in files and inspect them incrementally.

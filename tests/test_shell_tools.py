@@ -7,7 +7,7 @@ from src.config import config
 from src.errors import ErrorCode, MCPError
 from src.runners import subprocess_runner
 from src.runners.subprocess_runner import JobSnapshot, build_output_preview, read_output_delta
-from src.tools.shell_tools import execute_android_shell
+from src.tools.shell_tools import _next_action_hint, execute_android_shell
 
 
 def _configure_runtime(tmp_path: Path) -> None:
@@ -174,3 +174,36 @@ def test_mcperror_to_dict_contains_normalized_fields():
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert payload["error"]["retryable"] is False
     assert payload["error"]["suggested_next_action"]
+
+
+def test_next_action_hint_detects_internal_apktool_aapt2_failure():
+    hint = _next_action_hint(
+        status="failed",
+        finish_reason="failed",
+        primary_stream="stderr",
+        stdout_preview={"inline": "", "total_bytes": 0},
+        stderr_preview={
+            "inline": (
+                "Execution failed: [/data/data/com.termux/files/usr/tmp/aapt2_123.tmp, compile]\n"
+                "Syntax error: \"(\" unexpected\n"
+            ),
+            "total_bytes": 120,
+        },
+    )
+
+    assert "--aapt /data/data/com.termux/files/usr/bin/aapt2" in hint
+
+
+def test_next_action_hint_detects_leading_dollar_resource_names():
+    hint = _next_action_hint(
+        status="failed",
+        finish_reason="failed",
+        primary_stream="stderr",
+        stdout_preview={"inline": "", "total_bytes": 0},
+        stderr_preview={
+            "inline": "error: resource 'drawable/$avd_hide_password__0' has invalid entry name '$avd_hide_password__0.",
+            "total_bytes": 101,
+        },
+    )
+
+    assert "leading-$ resource name" in hint

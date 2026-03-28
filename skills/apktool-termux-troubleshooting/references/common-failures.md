@@ -25,6 +25,41 @@ strace -f -e execve -o /tmp/apktool.exec.log apktool b app_dir --aapt /data/data
 rg aapt2 /tmp/apktool.exec.log
 ```
 
+If the failing command omitted `--aapt`, fix that first before looking deeper.
+
+## `invalid entry name '$...`
+
+Typical meaning: decoded resources include filenames or references that start with `$`, and `aapt2` rejects them during rebuild.
+
+Start narrow:
+
+```bash
+find app_dir/res -type f | rg '/\\$'
+rg -n '@(drawable|mipmap)/\\$' app_dir/res
+```
+
+Then repair the exact names and references:
+
+```bash
+find app_dir/res -type f | rg '/\\$' | while read -r f; do
+  dir="$(dirname "$f")"
+  base="$(basename "$f")"
+  mv "$f" "$dir/$(printf '%s' "$base" | sed 's/^\\$//')"
+done
+```
+
+```bash
+find app_dir/res -type f \\( -name '*.xml' -o -name '*.json' \\) | while read -r f; do
+  sed -i 's#@drawable/\\$#@drawable/#g; s#@mipmap/\\$#@mipmap/#g' "$f"
+done
+```
+
+Rebuild again with the Termux binary:
+
+```bash
+apktool b app_dir --aapt /data/data/com.termux/files/usr/bin/aapt2
+```
+
 ## Resource compilation failure
 
 Capture stderr:

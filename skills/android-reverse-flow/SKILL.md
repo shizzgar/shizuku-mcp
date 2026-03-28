@@ -12,6 +12,7 @@ Use this skill for end-to-end Android APK reversing on the phone.
 - Use the MCP `shell` tool as the main control surface.
 - Keep shell output narrow. Prefer redirects, `rg`, `sed -n`, `jq`, `head`, and `tail` over dumping full trees or files.
 - For long jobs, keep using the same `job_id` and offsets instead of restarting commands.
+- On Android/Termux, treat plain `apktool b ...` as an anti-pattern. Always force `--aapt /data/data/com.termux/files/usr/bin/aapt2`.
 - Prefer separate working directories per APK and per iteration.
 - Treat `apktool` output as the editable source of truth for resources/manifest/smali. Treat `jadx` output as read-mostly navigation.
 
@@ -24,7 +25,7 @@ Use this skill for end-to-end Android APK reversing on the phone.
 5. Patch the smallest layer possible:
    manifest/resource first if enough;
    smali only if resource-level patching is not enough.
-6. Rebuild with `apktool b`.
+6. Rebuild with the helper script or `apktool b --aapt ...`.
 7. Sign the rebuilt APK.
 8. Install, launch, and capture failures.
 9. Iterate from the exact failing step instead of re-running the full chain.
@@ -41,3 +42,7 @@ Use this skill for end-to-end Android APK reversing on the phone.
 - Read [references/reverse-workflow.md](references/reverse-workflow.md) for the concrete decode -> patch -> rebuild -> sign -> install loop.
 - Read [references/termux-shell-patterns.md](references/termux-shell-patterns.md) for low-context shell habits and command templates.
 - If rebuild fails around `apktool`, resources, or `aapt2`, use the separate `apktool-termux-troubleshooting` skill.
+
+## Preferred helper
+
+- Prefer [scripts/apktool-build-termux.sh](scripts/apktool-build-termux.sh) for rebuilds on the phone instead of rewriting the full `apktool b ... --aapt ...` command each time.

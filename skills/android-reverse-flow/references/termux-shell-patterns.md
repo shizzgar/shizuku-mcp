@@ -10,6 +10,12 @@
 
 ## Good patterns
 
+Resolve the rebuild helper once before switching into the apktool work directory:
+
+```bash
+REVERSE_HELPER="$(realpath skills/android-reverse-flow/scripts/apktool-build-termux.sh)"
+```
+
 List candidate files:
 
 ```bash
@@ -25,8 +31,14 @@ sed -n '80,160p' apktool-out/AndroidManifest.xml
 Capture noisy output:
 
 ```bash
-apktool b apktool-out -o build/app.apk > build/stdout.log 2> build/stderr.log
+"$REVERSE_HELPER" apktool-out build/app.apk > build/stdout.log 2> build/stderr.log
 tail -n 60 build/stderr.log
+```
+
+Build a debuggable APK on-device:
+
+```bash
+"$REVERSE_HELPER" apktool-out build/app-debug.apk --debuggable
 ```
 
 Summarize trees instead of dumping them:

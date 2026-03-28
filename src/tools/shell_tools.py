@@ -134,6 +134,27 @@ def _next_action_hint(
     stdout_preview: Dict[str, Any],
     stderr_preview: Dict[str, Any],
 ) -> str:
+    def preview_text(preview: Dict[str, Any]) -> str:
+        chunks: list[str] = []
+        inline = preview.get("inline")
+        if isinstance(inline, str) and inline:
+            chunks.append(inline)
+        for key in ("first_lines", "sample_lines", "last_lines"):
+            value = preview.get(key)
+            if isinstance(value, list):
+                chunks.extend(line for line in value if isinstance(line, str) and line)
+        sections = preview.get("sections")
+        if isinstance(sections, list):
+            for section in sections:
+                if isinstance(section, dict):
+                    text = section.get("text")
+                    if isinstance(text, str) and text:
+                        chunks.append(text)
+        return "\n".join(chunks)
+
+    stderr_text = preview_text(stderr_preview)
+    combined_text = "\n".join(part for part in (stderr_text, preview_text(stdout_preview)) if part)
+
     if status == "running":
         return "Command is still running. Call shell again with continuation='continue' and the same job_id."
 
@@ -145,6 +166,18 @@ def _next_action_hint(
 
     if status == "killed_by_timeout":
         return "Command exceeded the hard timeout and was killed. Narrow the command or increase the server timeout budget."
+
+    if "Syntax error: \"(\" unexpected" in combined_text and "aapt2_" in combined_text:
+        return (
+            "apktool appears to be using its internal temp aapt2 binary. Retry with "
+            "--aapt /data/data/com.termux/files/usr/bin/aapt2."
+        )
+
+    if "invalid entry name '$" in combined_text:
+        return (
+            "aapt2 rejected a leading-$ resource name. Check res/ filenames starting with '$' "
+            "and XML refs like @drawable/$... before rebuilding."
+        )
 
     if finish_reason == "failed":
         return "Command exited with a non-zero code. Inspect stderr or rerun a narrower diagnostic command."
