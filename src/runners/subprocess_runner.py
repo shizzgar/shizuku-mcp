@@ -14,6 +14,8 @@ logger = logging.getLogger("android-shizuku-mcp")
 
 LEGACY_MAX_OUTPUT_LENGTH = 30000
 STREAM_CHUNK_SIZE = 8192
+SERVER_INSTANCE_ID = uuid.uuid4().hex[:12]
+TERMINAL_JOB_STATES = {"completed", "failed", "cancelled", "killed_by_timeout", "lost"}
 
 
 @dataclass
@@ -22,22 +24,32 @@ class StreamStats:
 
 
 @dataclass
-class CommandPreview:
+class OutputPreview:
+    mode: str
+    strategy: str
     inline: Optional[str]
     truncated: bool
-    strategy: str
-    sections: List[Dict[str, str]]
+    has_more: bool
+    start_offset: int
+    end_offset: int
+    next_offset: int
     total_bytes: int
     path: str
+    sections: List[Dict[str, str]]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "mode": self.mode,
+            "strategy": self.strategy,
             "inline": self.inline,
             "truncated": self.truncated,
-            "strategy": self.strategy,
-            "sections": self.sections,
+            "has_more": self.has_more,
+            "start_offset": self.start_offset,
+            "end_offset": self.end_offset,
+            "next_offset": self.next_offset,
             "total_bytes": self.total_bytes,
             "path": self.path,
+            "sections": self.sections,
         }
 
 
@@ -52,11 +64,14 @@ class JobSnapshot:
     stderr_path: str
     stdout_bytes: int
     stderr_bytes: int
+    owner_id: str
+    pid: Optional[int]
     exit_code: Optional[int] = None
     completed_at: Optional[float] = None
     duration_ms: Optional[int] = None
     backend: Optional[str] = None
     cwd: Optional[str] = None
+    finish_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,11 +84,14 @@ class JobSnapshot:
             "stderr_path": self.stderr_path,
             "stdout_bytes": self.stdout_bytes,
             "stderr_bytes": self.stderr_bytes,
+            "owner_id": self.owner_id,
+            "pid": self.pid,
             "exit_code": self.exit_code,
             "completed_at": self.completed_at,
             "duration_ms": self.duration_ms,
             "backend": self.backend,
             "cwd": self.cwd,
+            "finish_reason": self.finish_reason,
         }
 
 
@@ -94,6 +112,7 @@ class RunningJob:
         backend: Optional[str],
         cwd: Optional[str],
         killer_task: Optional[asyncio.Task[Any]],
+        owner_id: str,
     ):
         self.job_id = job_id
         self.process = process
@@ -109,34 +128,33 @@ class RunningJob:
         self.backend = backend
         self.cwd = cwd
         self.killer_task = killer_task
+        self.owner_id = owner_id
         self.exit_code: Optional[int] = None
         self.completed_at: Optional[float] = None
+        self.status: str = "running"
+        self.finish_reason: Optional[str] = None
 
-    def snapshot(self, status: Optional[str] = None) -> JobSnapshot:
-        resolved_status = status
-        if resolved_status is None:
-            resolved_status = "completed" if self.exit_code is not None else "running"
-
-        duration_ms: Optional[int] = None
+    def snapshot(self) -> JobSnapshot:
         end_time = self.completed_at or time.time()
-        if self.started_at:
-            duration_ms = int((end_time - self.started_at) * 1000)
-
+        duration_ms = int((end_time - self.started_at) * 1000)
         return JobSnapshot(
             job_id=self.job_id,
             command=self.command,
             args=self.args,
-            status=resolved_status,
+            status=self.status,
             started_at=self.started_at,
             stdout_path=str(self.stdout_path),
             stderr_path=str(self.stderr_path),
             stdout_bytes=self.stdout_stats.bytes_written,
             stderr_bytes=self.stderr_stats.bytes_written,
+            owner_id=self.owner_id,
+            pid=self.process.pid,
             exit_code=self.exit_code,
             completed_at=self.completed_at,
             duration_ms=duration_ms,
             backend=self.backend,
             cwd=self.cwd,
+            finish_reason=self.finish_reason,
         )
 
 
@@ -162,63 +180,204 @@ def _safe_decode(blob: bytes) -> str:
     return blob.decode(errors="replace")
 
 
+def _read_window(path: Path, start: int, size: int) -> bytes:
+    if size <= 0 or not path.exists():
+        return b""
+
+    with open(path, "rb") as handle:
+        handle.seek(max(0, start))
+        return handle.read(size)
+
+
+def _trim_to_line_boundaries(
+    text: str,
+    trim_leading: bool,
+    trim_trailing: bool,
+) -> str:
+    if "\n" not in text:
+        return text
+
+    if trim_leading and not text.startswith("\n"):
+        first_break = text.find("\n")
+        if first_break != -1:
+            text = text[first_break + 1 :]
+
+    if trim_trailing and not text.endswith("\n"):
+        last_break = text.rfind("\n")
+        if last_break != -1:
+            text = text[:last_break]
+
+    return text
+
+
+def _read_text_slice(
+    path: Path,
+    start_offset: int,
+    max_bytes: int,
+    total_bytes: int,
+    line_aware: bool = True,
+) -> Tuple[str, int]:
+    start_offset = max(0, min(start_offset, total_bytes))
+    max_bytes = max(0, min(max_bytes, total_bytes - start_offset))
+    raw = _read_window(path, start_offset, max_bytes)
+    text = _safe_decode(raw)
+    if line_aware:
+        text = _trim_to_line_boundaries(
+            text,
+            trim_leading=start_offset > 0,
+            trim_trailing=(start_offset + max_bytes) < total_bytes,
+        )
+    return text, start_offset + len(raw)
+
+
 def build_output_preview(
     path: Path,
     total_bytes: int,
     inline_budget: Optional[int] = None,
     section_budget: Optional[int] = None,
-) -> CommandPreview:
+) -> OutputPreview:
     inline_budget = inline_budget or config.inline_output_char_budget
     section_budget = section_budget or config.preview_section_char_budget
 
     if not path.exists():
-        return CommandPreview(
+        return OutputPreview(
+            mode="inline",
+            strategy="inline",
             inline="",
             truncated=False,
-            strategy="inline",
-            sections=[],
+            has_more=False,
+            start_offset=0,
+            end_offset=0,
+            next_offset=0,
             total_bytes=0,
             path=str(path),
+            sections=[],
         )
 
     if total_bytes <= inline_budget:
-        with open(path, "rb") as handle:
-            inline = _safe_decode(handle.read(inline_budget))
-        return CommandPreview(
+        inline, end_offset = _read_text_slice(path, 0, inline_budget, total_bytes, line_aware=False)
+        return OutputPreview(
+            mode="inline",
+            strategy="inline",
             inline=inline,
             truncated=False,
-            strategy="inline",
-            sections=[],
+            has_more=False,
+            start_offset=0,
+            end_offset=end_offset,
+            next_offset=total_bytes,
             total_bytes=total_bytes,
             path=str(path),
+            sections=[],
         )
 
-    with open(path, "rb") as handle:
-        head = _safe_decode(handle.read(section_budget))
+    head_text, _ = _read_text_slice(path, 0, section_budget, total_bytes)
+    sections = [{"position": "head", "text": head_text}]
 
-        middle = ""
-        if total_bytes > section_budget * 2:
-            middle_offset = max(0, (total_bytes // 2) - (section_budget // 2))
-            handle.seek(middle_offset)
-            middle = _safe_decode(handle.read(section_budget))
+    if total_bytes > section_budget * 2:
+        middle_offset = max(0, (total_bytes // 2) - (section_budget // 2))
+        middle_text, _ = _read_text_slice(path, middle_offset, section_budget, total_bytes)
+        if middle_text:
+            sections.append({"position": "middle", "text": middle_text})
 
-        tail_offset = max(0, total_bytes - section_budget)
-        handle.seek(tail_offset)
-        tail = _safe_decode(handle.read(section_budget))
+    tail_offset = max(0, total_bytes - section_budget)
+    tail_text, tail_end = _read_text_slice(path, tail_offset, section_budget, total_bytes)
+    sections.append({"position": "tail", "text": tail_text})
 
-    sections = [{"position": "head", "text": head}]
-    if middle:
-        sections.append({"position": "middle", "text": middle})
-    sections.append({"position": "tail", "text": tail})
-
-    return CommandPreview(
+    return OutputPreview(
+        mode="sample",
+        strategy="head_middle_tail" if len(sections) == 3 else "head_tail",
         inline=None,
         truncated=True,
-        strategy="head_middle_tail" if middle else "head_tail",
-        sections=sections,
+        has_more=False,
+        start_offset=0,
+        end_offset=tail_end,
+        next_offset=total_bytes,
         total_bytes=total_bytes,
         path=str(path),
+        sections=sections,
     )
+
+
+def read_output_delta(
+    path: Path,
+    total_bytes: int,
+    start_offset: int,
+    inline_budget: Optional[int] = None,
+) -> OutputPreview:
+    inline_budget = inline_budget or config.inline_output_char_budget
+    bounded_start = max(0, min(start_offset, total_bytes))
+
+    if total_bytes <= bounded_start:
+        return OutputPreview(
+            mode="delta",
+            strategy="delta",
+            inline="",
+            truncated=False,
+            has_more=False,
+            start_offset=bounded_start,
+            end_offset=bounded_start,
+            next_offset=bounded_start,
+            total_bytes=total_bytes,
+            path=str(path),
+            sections=[],
+        )
+
+    inline, end_offset = _read_text_slice(path, bounded_start, inline_budget, total_bytes, line_aware=False)
+    has_more = end_offset < total_bytes
+    return OutputPreview(
+        mode="delta",
+        strategy="delta",
+        inline=inline,
+        truncated=has_more,
+        has_more=has_more,
+        start_offset=bounded_start,
+        end_offset=end_offset,
+        next_offset=end_offset,
+        total_bytes=total_bytes,
+        path=str(path),
+        sections=[],
+    )
+
+
+def _job_size(snapshot: JobSnapshot) -> int:
+    return snapshot.stdout_bytes + snapshot.stderr_bytes
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        return
+
+
+def get_runtime_health() -> Dict[str, Any]:
+    config.setup_dirs()
+    meta_files = list(config.jobs_dir.glob("*.json"))
+    job_count = 0
+    terminal_job_count = 0
+    storage_bytes = 0
+
+    for meta_path in meta_files:
+        try:
+            snapshot = JobSnapshot(**json.loads(meta_path.read_text(encoding="utf-8")))
+        except Exception:
+            continue
+        job_count += 1
+        if snapshot.status in TERMINAL_JOB_STATES:
+            terminal_job_count += 1
+        storage_bytes += _job_size(snapshot)
+
+    return {
+        "instance_id": SERVER_INSTANCE_ID,
+        "jobs_dir": str(config.jobs_dir.absolute()),
+        "job_count": job_count,
+        "terminal_job_count": terminal_job_count,
+        "storage_bytes": storage_bytes,
+        "max_completed_jobs": config.max_completed_jobs,
+        "max_job_age_sec": config.max_job_age_sec,
+        "max_runtime_storage_bytes": config.max_runtime_storage_bytes,
+    }
 
 
 class CommandJobManager:
@@ -235,6 +394,55 @@ class CommandJobManager:
         _, _, meta_path = self._job_paths(snapshot.job_id)
         meta_path.write_text(json.dumps(snapshot.to_dict(), ensure_ascii=True, indent=2), encoding="utf-8")
 
+    def _remove_job_files(self, job_id: str) -> None:
+        stdout_path, stderr_path, meta_path = self._job_paths(job_id)
+        _safe_unlink(stdout_path)
+        _safe_unlink(stderr_path)
+        _safe_unlink(meta_path)
+
+    def cleanup_old_jobs(self) -> None:
+        config.setup_dirs()
+        now = time.time()
+        snapshots: List[Tuple[JobSnapshot, Path]] = []
+
+        for meta_path in config.jobs_dir.glob("*.json"):
+            try:
+                snapshot = JobSnapshot(**json.loads(meta_path.read_text(encoding="utf-8")))
+            except Exception:
+                _safe_unlink(meta_path)
+                continue
+            snapshots.append((snapshot, meta_path))
+
+        terminal_snapshots = [
+            item for item in snapshots if item[0].status in TERMINAL_JOB_STATES
+        ]
+        terminal_snapshots.sort(
+            key=lambda item: item[0].completed_at or item[0].started_at,
+            reverse=True,
+        )
+
+        total_storage = sum(_job_size(snapshot) for snapshot, _ in terminal_snapshots)
+        retained = 0
+
+        for snapshot, _ in terminal_snapshots:
+            completed_at = snapshot.completed_at or snapshot.started_at
+            age = now - completed_at
+            should_delete = False
+
+            if age > config.max_job_age_sec:
+                should_delete = True
+            elif retained >= config.max_completed_jobs:
+                should_delete = True
+            elif total_storage > config.max_runtime_storage_bytes:
+                should_delete = True
+
+            if should_delete:
+                total_storage -= _job_size(snapshot)
+                self._remove_job_files(snapshot.job_id)
+                continue
+
+            retained += 1
+
     async def _kill_after(self, job_id: str, timeout: int) -> None:
         try:
             await asyncio.sleep(timeout)
@@ -242,6 +450,8 @@ class CommandJobManager:
             if job is None or job.process.returncode is not None:
                 return
             logger.warning("KILL[%s]: exceeded hard timeout of %ss", job_id, timeout)
+            job.finish_reason = "killed_by_timeout"
+            job.status = "killed_by_timeout"
             job.process.kill()
             await job.process.wait()
         except asyncio.CancelledError:
@@ -256,7 +466,7 @@ class CommandJobManager:
         backend: Optional[str] = None,
         hard_timeout: Optional[int] = None,
     ) -> JobSnapshot:
-        config.setup_dirs()
+        self.cleanup_old_jobs()
 
         job_id = uuid.uuid4().hex[:12]
         stdout_path, stderr_path, _ = self._job_paths(job_id)
@@ -275,6 +485,7 @@ class CommandJobManager:
         stderr_stats = StreamStats()
         stdout_task = asyncio.create_task(_stream_to_file(process.stdout, stdout_path, stdout_stats))
         stderr_task = asyncio.create_task(_stream_to_file(process.stderr, stderr_path, stderr_stats))
+
         killer_task = None
         resolved_hard_timeout = hard_timeout if hard_timeout is not None else config.hard_kill_timeout_sec
         if resolved_hard_timeout > 0:
@@ -295,16 +506,17 @@ class CommandJobManager:
             backend=backend,
             cwd=cwd,
             killer_task=killer_task,
+            owner_id=SERVER_INSTANCE_ID,
         )
         self._jobs[job_id] = job
 
-        snapshot = job.snapshot(status="running")
+        snapshot = job.snapshot()
         self._persist_snapshot(snapshot)
         return snapshot
 
     async def _finalize_if_done(self, job: RunningJob) -> JobSnapshot:
-        if job.exit_code is not None:
-            snapshot = job.snapshot(status="completed")
+        if job.status in TERMINAL_JOB_STATES:
+            snapshot = job.snapshot()
             self._persist_snapshot(snapshot)
             return snapshot
 
@@ -312,16 +524,28 @@ class CommandJobManager:
             try:
                 await asyncio.wait_for(job.process.wait(), timeout=0)
             except asyncio.TimeoutError:
-                snapshot = job.snapshot(status="running")
+                snapshot = job.snapshot()
                 self._persist_snapshot(snapshot)
                 return snapshot
 
         await asyncio.gather(job.stdout_task, job.stderr_task)
         if job.killer_task is not None:
             job.killer_task.cancel()
+
         job.exit_code = job.process.returncode or 0
         job.completed_at = time.time()
-        snapshot = job.snapshot(status="completed")
+        if job.finish_reason == "cancelled":
+            job.status = "cancelled"
+        elif job.finish_reason == "killed_by_timeout":
+            job.status = "killed_by_timeout"
+        elif job.exit_code == 0:
+            job.finish_reason = "completed"
+            job.status = "completed"
+        else:
+            job.finish_reason = "failed"
+            job.status = "failed"
+
+        snapshot = job.snapshot()
         self._persist_snapshot(snapshot)
         return snapshot
 
@@ -333,7 +557,7 @@ class CommandJobManager:
         try:
             await asyncio.wait_for(job.process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            snapshot = job.snapshot(status="running")
+            snapshot = job.snapshot()
             self._persist_snapshot(snapshot)
             return snapshot
 
@@ -341,21 +565,35 @@ class CommandJobManager:
 
     async def get_snapshot(self, job_id: str) -> JobSnapshot:
         job = self._jobs.get(job_id)
-        if job is None:
-            _, _, meta_path = self._job_paths(job_id)
-            if meta_path.exists():
-                data = json.loads(meta_path.read_text())
-                return JobSnapshot(**data)
+        if job is not None:
+            return await self._finalize_if_done(job)
+
+        _, _, meta_path = self._job_paths(job_id)
+        if not meta_path.exists():
             raise MCPError(ErrorCode.INVALID_ARGUMENT, "Unknown job_id", {"job_id": job_id})
 
-        return await self._finalize_if_done(job)
+        snapshot = JobSnapshot(**json.loads(meta_path.read_text(encoding="utf-8")))
+        if snapshot.status == "running" and snapshot.owner_id != SERVER_INSTANCE_ID:
+            snapshot.status = "lost"
+            snapshot.finish_reason = "orphaned"
+            snapshot.completed_at = snapshot.completed_at or time.time()
+            snapshot.duration_ms = int((snapshot.completed_at - snapshot.started_at) * 1000)
+            self._persist_snapshot(snapshot)
+        return snapshot
 
-    async def terminate(self, job_id: str) -> JobSnapshot:
+    async def terminate(self, job_id: str, reason: str = "cancelled") -> JobSnapshot:
         job = self._jobs.get(job_id)
         if job is None:
-            raise MCPError(ErrorCode.INVALID_ARGUMENT, "Unknown job_id", {"job_id": job_id})
+            snapshot = await self.get_snapshot(job_id)
+            if snapshot.status == "running":
+                snapshot.status = "lost"
+                snapshot.finish_reason = "orphaned"
+                self._persist_snapshot(snapshot)
+            return snapshot
 
         if job.process.returncode is None:
+            job.finish_reason = reason
+            job.status = reason
             job.process.kill()
             await job.process.wait()
 
@@ -376,7 +614,7 @@ def _handle_legacy_large_output(stdout: str, stderr: str, cmd_name: str) -> str:
     timestamp = int(time.time())
     filename = f"large_output_{cmd_name}_{timestamp}.txt"
     filepath = config.artifacts_dir / filename
-    filepath.write_text(f"COMMAND: {cmd_name}\n\n{combined}")
+    filepath.write_text(f"COMMAND: {cmd_name}\n\n{combined}", encoding="utf-8")
 
     return (
         f"OUTPUT TOO LARGE ({len(combined)} chars). Truncated to {LEGACY_MAX_OUTPUT_LENGTH}.\n"
@@ -428,10 +666,8 @@ async def run_command(
 
         await asyncio.gather(stdout_task, stderr_task)
 
-        with open(stdout_path, "rb") as handle:
-            stdout = _safe_decode(handle.read())
-        with open(stderr_path, "rb") as handle:
-            stderr = _safe_decode(handle.read())
+        stdout = _safe_decode(_read_window(stdout_path, 0, stdout_stats.bytes_written))
+        stderr = _safe_decode(_read_window(stderr_path, 0, stderr_stats.bytes_written))
 
         logger.info("DONE: %s (RC: %s)", cmd_str, process.returncode or 0)
         if len(stdout) + len(stderr) > LEGACY_MAX_OUTPUT_LENGTH:

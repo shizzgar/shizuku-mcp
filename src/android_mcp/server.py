@@ -24,15 +24,19 @@ async def shell(
     continuation: str = "start",
     job_id: str | None = None,
     cwd: str | None = None,
+    from_stdout_offset: int | None = None,
+    from_stderr_offset: int | None = None,
 ) -> dict:
     """
     Universal Android shell for tiny-context LLMs.
 
     Use `continuation='start'` to run a command.
     Use `continuation='continue'` with a `job_id` to poll long-running work.
+    Use `continuation='cancel'` with a `job_id` to stop a running job.
     `privilege_mode='auto'` chooses Termux or `rish` automatically.
 
     Large output is sampled instead of returned in full.
+    For incremental reads, pass `from_stdout_offset` and/or `from_stderr_offset`.
     Prefer narrowing with `head`, `tail`, `sed -n`, `rg`, `jq`, or redirects.
     """
     return await shell_tools.execute_android_shell(
@@ -43,6 +47,8 @@ async def shell(
         continuation=continuation,
         job_id=job_id,
         cwd=cwd,
+        from_stdout_offset=from_stdout_offset,
+        from_stderr_offset=from_stderr_offset,
     )
 
 # --- SERVICE TOOLS ---

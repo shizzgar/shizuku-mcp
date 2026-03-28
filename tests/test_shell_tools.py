@@ -1,8 +1,11 @@
 import asyncio
+import json
+import time
 from pathlib import Path
 
 from src.config import config
-from src.runners.subprocess_runner import build_output_preview
+from src.runners import subprocess_runner
+from src.runners.subprocess_runner import JobSnapshot, build_output_preview
 from src.tools.shell_tools import execute_android_shell
 
 
@@ -25,7 +28,7 @@ def test_build_output_preview_samples_large_output(tmp_path):
     assert preview.strategy == "head_middle_tail"
     assert [section["position"] for section in preview.sections] == ["head", "middle", "tail"]
     assert preview.sections[0]["text"].startswith("A")
-    assert preview.sections[-1]["text"].endswith("C" * 120)
+    assert preview.sections[-1]["text"].strip().endswith("C")
 
 
 def test_shell_returns_sampled_output_for_large_stdout(tmp_path):
@@ -42,12 +45,13 @@ def test_shell_returns_sampled_output_for_large_stdout(tmp_path):
 
     data = result["data"]
     assert data["status"] == "completed"
+    assert data["finish_reason"] == "completed"
     assert data["stdout"]["truncated"] is True
     assert data["stdout"]["strategy"] in {"head_tail", "head_middle_tail"}
     assert Path(data["artifacts"]["stdout_path"]).exists()
 
 
-def test_shell_continues_long_running_job(tmp_path):
+def test_shell_continues_long_running_job_with_offsets(tmp_path):
     _configure_runtime(tmp_path)
 
     started = asyncio.run(
@@ -68,10 +72,65 @@ def test_shell_continues_long_running_job(tmp_path):
             continuation="continue",
             job_id=job_id,
             privilege_mode="termux",
+            from_stdout_offset=0,
         )
     )
 
     assert finished["data"]["status"] == "completed"
     assert finished["data"]["exit_code"] == 0
+    assert finished["data"]["stdout"]["mode"] == "delta"
     assert "start" in (finished["data"]["stdout"]["inline"] or "")
-    assert "done" in (finished["data"]["stdout"]["inline"] or "")
+    assert finished["data"]["offsets"]["stdout"] >= finished["data"]["stdout"]["next_offset"]
+
+
+def test_shell_can_cancel_running_job(tmp_path):
+    _configure_runtime(tmp_path)
+
+    started = asyncio.run(
+        execute_android_shell(
+            command="python3 -c \"import time; time.sleep(10)\"",
+            privilege_mode="termux",
+            timeout_sec=0,
+        )
+    )
+
+    cancelled = asyncio.run(
+        execute_android_shell(
+            continuation="cancel",
+            job_id=started["data"]["job_id"],
+            privilege_mode="termux",
+        )
+    )
+
+    assert cancelled["data"]["status"] == "cancelled"
+    assert cancelled["data"]["finish_reason"] == "cancelled"
+
+
+def test_stale_job_becomes_lost_after_instance_change(tmp_path):
+    _configure_runtime(tmp_path)
+
+    snapshot = JobSnapshot(
+        job_id="stale12345678",
+        command="sleep 10",
+        args=["bash", "-lc", "sleep 10"],
+        status="running",
+        started_at=time.time() - 30,
+        stdout_path=str((config.jobs_dir / "stale12345678.stdout.log").absolute()),
+        stderr_path=str((config.jobs_dir / "stale12345678.stderr.log").absolute()),
+        stdout_bytes=0,
+        stderr_bytes=0,
+        owner_id="previous-instance",
+        pid=99999,
+        backend="termux",
+        finish_reason=None,
+    )
+    meta_path = config.jobs_dir / "stale12345678.json"
+    meta_path.write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
+    Path(snapshot.stdout_path).write_text("", encoding="utf-8")
+    Path(snapshot.stderr_path).write_text("", encoding="utf-8")
+
+    found = asyncio.run(subprocess_runner.command_job_manager.get_snapshot("stale12345678"))
+
+    assert found.status == "lost"
+    assert found.finish_reason == "orphaned"
+    assert found.owner_id != subprocess_runner.SERVER_INSTANCE_ID

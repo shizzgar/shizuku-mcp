@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from typing import List, Optional
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class ServerConfig(BaseSettings):
@@ -23,6 +22,9 @@ class ServerConfig(BaseSettings):
     hard_kill_timeout_sec: int = 600
     inline_output_char_budget: int = 2000
     preview_section_char_budget: int = 300
+    max_completed_jobs: int = 50
+    max_job_age_sec: int = 86400
+    max_runtime_storage_bytes: int = 50 * 1024 * 1024
     allow_package_force_stop: bool = True
     allow_screenrecord: bool = True
     

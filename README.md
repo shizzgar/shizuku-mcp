@@ -8,6 +8,8 @@ An open-source Model Context Protocol (MCP) server for Android, running in Termu
 * **Single Universal Shell Tool**: One MCP tool for Termux and `rish`, designed for small-context LLMs.
 * **Adaptive Output Sampling**: Large output is stored on disk and returned as head/middle/tail previews.
 * **Long-Running Job Continuations**: Commands that exceed the sync budget return a `job_id` instead of hard-failing.
+* **Incremental Output Reads**: Follow-up calls can continue from `stdout`/`stderr` byte offsets.
+* **Job Control**: Running jobs can be cancelled through the same `shell` tool.
 * **Shizuku Integration**: High-privilege Android commands can be routed through `rish`.
 * **Security-focused**: Localhost binding, Bearer token auth, and Origin checks.
 * **Artifact Management**: Command stdout/stderr are persisted for follow-up inspection.
@@ -59,7 +61,7 @@ Or connect via HTTP directly using an MCP client supporting Streamable HTTP.
 
 ## Available Tools
 
-* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, and returns compact previews instead of giant inline output.
+* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, cancel jobs, and return compact previews or incremental output slices via offsets.
 * **System**: `doctor`
 * **Artifacts**: `list_artifacts`
 

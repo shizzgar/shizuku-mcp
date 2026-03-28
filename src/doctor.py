@@ -1,10 +1,9 @@
 import os
-import platform
 from typing import Any, Dict
 from src.config import config
 from src.runners.rish_runner import rish_runner
 from src.runners.termux_api_runner import termux_api_runner
-from src.runners.subprocess_runner import run_command
+from src.runners.subprocess_runner import get_runtime_health
 
 async def get_system_info() -> Dict[str, Any]:
     info = {
@@ -16,6 +15,8 @@ async def get_system_info() -> Dict[str, Any]:
         "backend": "unknown",
         "android_14_warning": False,
         "artifacts_dir_writable": os.access(config.artifacts_dir, os.W_OK),
+        "runtime_dir_writable": os.access(config.runtime_dir, os.W_OK),
+        "job_runtime": get_runtime_health(),
         "server_version": "0.1.0"
     }
 
