@@ -13,10 +13,16 @@ class ServerConfig(BaseSettings):
     # Paths
     artifacts_dir: Path = Path("artifacts")
     logs_dir: Path = Path("logs")
+    runtime_dir: Path = Path("runtime")
+    jobs_dir: Path = Path("runtime/jobs")
     
     # Security & Features
     enable_raw_shell: bool = True
-    max_command_timeout_sec: int = 30 # Увеличим для Android 15
+    max_command_timeout_sec: int = 30 # Legacy cap for non-shell tools
+    sync_command_budget_sec: int = 20
+    hard_kill_timeout_sec: int = 600
+    inline_output_char_budget: int = 2000
+    preview_section_char_budget: int = 300
     allow_package_force_stop: bool = True
     allow_screenrecord: bool = True
     
@@ -52,5 +58,7 @@ class ServerConfig(BaseSettings):
     def setup_dirs(self):
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
 config = ServerConfig()

@@ -5,10 +5,12 @@ An open-source Model Context Protocol (MCP) server for Android, running in Termu
 ## Features
 
 * **Streamable HTTP Transport**: Modern MCP transport for robust communication.
-* **Shizuku Integration**: High-privilege access for app management, intent launching, and screen operations.
-* **Termux:API Integration**: Low-privilege access for clipboard, battery, wifi, and notifications.
+* **Single Universal Shell Tool**: One MCP tool for Termux and `rish`, designed for small-context LLMs.
+* **Adaptive Output Sampling**: Large output is stored on disk and returned as head/middle/tail previews.
+* **Long-Running Job Continuations**: Commands that exceed the sync budget return a `job_id` instead of hard-failing.
+* **Shizuku Integration**: High-privilege Android commands can be routed through `rish`.
 * **Security-focused**: Localhost binding, Bearer token auth, and Origin checks.
-* **Artifact Management**: Screenshot and screen recording capture.
+* **Artifact Management**: Command stdout/stderr are persisted for follow-up inspection.
 
 ## Prerequisites
 
@@ -57,13 +59,9 @@ Or connect via HTTP directly using an MCP client supporting Streamable HTTP.
 
 ## Available Tools
 
-* **System**: `doctor`, `ping`, `device_info`, `battery_status`, `wifi_status`.
-* **Apps**: `list_packages`, `open_app`, `force_stop`.
-* **Intents**: `start_intent`, `open_url`.
-* **Screen**: `take_screenshot`, `record_screen`.
-* **Utility**: `clipboard_get`, `clipboard_set`, `show_notification`.
-* **Shell**: `shell_readonly`, `shell_privileged` (disabled by default).
-* **Artifacts**: `list_artifacts`.
+* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, and returns compact previews instead of giant inline output.
+* **System**: `doctor`
+* **Artifacts**: `list_artifacts`
 
 ## Autostart
 
@@ -73,8 +71,8 @@ Run `./setup_boot.sh` to create a Termux:Boot script. Ensure the Termux:Boot app
 
 * Bind only to `127.0.0.1`.
 * Bearer token authentication (optional but recommended).
-* Whitelist and blacklist for shell commands.
-* Explicit confirmation required for privileged shell actions.
+* Explicit denylist for obviously destructive shell commands.
+* Large outputs are sampled to protect LLM context windows.
 
 ## License
 
