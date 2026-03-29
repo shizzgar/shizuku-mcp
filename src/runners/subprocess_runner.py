@@ -1,6 +1,9 @@
 import asyncio
+import errno
 import json
 import logging
+import os
+import pty
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,11 +19,36 @@ LEGACY_MAX_OUTPUT_LENGTH = 30000
 STREAM_CHUNK_SIZE = 8192
 SERVER_INSTANCE_ID = uuid.uuid4().hex[:12]
 TERMINAL_JOB_STATES = {"completed", "failed", "cancelled", "killed_by_timeout", "lost"}
+TERMINAL_SESSION_STATES = {"closed", "lost"}
 
 
 @dataclass
 class StreamStats:
     bytes_written: int = 0
+
+
+@dataclass
+class TextRead:
+    text: str
+    truncated: bool
+    has_more: bool
+    start_offset: int
+    next_offset: int
+    total_bytes: int
+    path: str
+    message: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "text": self.text,
+            "truncated": self.truncated,
+            "has_more": self.has_more,
+            "start_offset": self.start_offset,
+            "next_offset": self.next_offset,
+            "total_bytes": self.total_bytes,
+            "path": self.path,
+            "message": self.message,
+        }
 
 
 @dataclass
@@ -113,6 +141,40 @@ class JobSnapshot:
         }
 
 
+@dataclass
+class SessionSnapshot:
+    session_id: str
+    status: str
+    started_at: float
+    output_path: str
+    output_bytes: int
+    owner_id: str
+    pid: Optional[int]
+    backend: Optional[str] = None
+    cwd: Optional[str] = None
+    exit_code: Optional[int] = None
+    completed_at: Optional[float] = None
+    duration_ms: Optional[int] = None
+    read_offset: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "started_at": self.started_at,
+            "output_path": self.output_path,
+            "output_bytes": self.output_bytes,
+            "owner_id": self.owner_id,
+            "pid": self.pid,
+            "backend": self.backend,
+            "cwd": self.cwd,
+            "exit_code": self.exit_code,
+            "completed_at": self.completed_at,
+            "duration_ms": self.duration_ms,
+            "read_offset": self.read_offset,
+        }
+
+
 class RunningJob:
     def __init__(
         self,
@@ -150,6 +212,7 @@ class RunningJob:
         self.exit_code: Optional[int] = None
         self.completed_at: Optional[float] = None
         self.status: str = "running"
+        self.read_offset: int = 0
         self.finish_reason: Optional[str] = None
 
     def snapshot(self) -> JobSnapshot:
@@ -176,6 +239,54 @@ class RunningJob:
         )
 
 
+class RunningSession:
+    def __init__(
+        self,
+        session_id: str,
+        process: asyncio.subprocess.Process,
+        master_fd: int,
+        output_path: Path,
+        read_task: asyncio.Task[Any],
+        output_stats: StreamStats,
+        started_at: float,
+        backend: Optional[str],
+        cwd: Optional[str],
+        owner_id: str,
+    ):
+        self.session_id = session_id
+        self.process = process
+        self.master_fd = master_fd
+        self.output_path = output_path
+        self.read_task = read_task
+        self.output_stats = output_stats
+        self.started_at = started_at
+        self.backend = backend
+        self.cwd = cwd
+        self.owner_id = owner_id
+        self.exit_code: Optional[int] = None
+        self.completed_at: Optional[float] = None
+        self.status: str = "running"
+
+    def snapshot(self) -> SessionSnapshot:
+        end_time = self.completed_at or time.time()
+        duration_ms = int((end_time - self.started_at) * 1000)
+        return SessionSnapshot(
+            session_id=self.session_id,
+            status=self.status,
+            started_at=self.started_at,
+            output_path=str(self.output_path),
+            output_bytes=self.output_stats.bytes_written,
+            owner_id=self.owner_id,
+            pid=self.process.pid,
+            backend=self.backend,
+            cwd=self.cwd,
+            exit_code=self.exit_code,
+            completed_at=self.completed_at,
+            duration_ms=duration_ms,
+            read_offset=self.read_offset,
+        )
+
+
 async def _stream_to_file(
     stream: Optional[asyncio.StreamReader],
     path: Path,
@@ -194,8 +305,36 @@ async def _stream_to_file(
             stats.bytes_written += len(chunk)
 
 
+async def _stream_pty_to_file(
+    master_fd: int,
+    path: Path,
+    stats: StreamStats,
+) -> None:
+    loop = asyncio.get_running_loop()
+    with open(path, "wb") as handle:
+        while True:
+            try:
+                chunk = await loop.run_in_executor(None, os.read, master_fd, STREAM_CHUNK_SIZE)
+            except OSError as exc:
+                if exc.errno in {errno.EIO, errno.EBADF}:
+                    break
+                raise
+            if not chunk:
+                break
+            handle.write(chunk)
+            handle.flush()
+            stats.bytes_written += len(chunk)
+
+
 def _safe_decode(blob: bytes) -> str:
     return blob.decode(errors="replace")
+
+
+def _close_fd(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        return
 
 
 def _read_window(path: Path, start: int, size: int) -> bytes:
@@ -205,6 +344,71 @@ def _read_window(path: Path, start: int, size: int) -> bytes:
     with open(path, "rb") as handle:
         handle.seek(max(0, start))
         return handle.read(size)
+
+
+def read_inline_text(
+    path: Path,
+    total_bytes: int,
+    inline_budget: Optional[int] = None,
+    prefer_tail: bool = False,
+) -> TextRead:
+    inline_budget = inline_budget or config.inline_output_char_budget
+
+    if not path.exists():
+        return TextRead("", False, False, 0, 0, 0, str(path))
+
+    if total_bytes <= inline_budget:
+        text = _safe_decode(_read_window(path, 0, total_bytes))
+        return TextRead(text, False, False, 0, total_bytes, total_bytes, str(path))
+
+    if prefer_tail:
+        start = max(0, total_bytes - inline_budget)
+        text = _safe_decode(_read_window(path, start, total_bytes - start))
+        omitted = start
+        marker = f"...[truncated {omitted} earlier bytes]...\n"
+        return TextRead(marker + text, True, False, 0, total_bytes, total_bytes, str(path))
+
+    marker = f"\n...[truncated {total_bytes - inline_budget} bytes]...\n"
+    head_budget = max(1, (inline_budget - len(marker)) // 2)
+    tail_budget = max(1, inline_budget - len(marker) - head_budget)
+    head = _safe_decode(_read_window(path, 0, head_budget))
+    tail_start = max(0, total_bytes - tail_budget)
+    tail = _safe_decode(_read_window(path, tail_start, total_bytes - tail_start))
+    return TextRead(head + marker + tail, True, False, 0, total_bytes, total_bytes, str(path))
+
+
+def read_text_delta(
+    path: Path,
+    total_bytes: int,
+    start_offset: int,
+    inline_budget: Optional[int] = None,
+) -> TextRead:
+    inline_budget = inline_budget or config.inline_output_char_budget
+    bounded_start = max(0, min(start_offset, total_bytes))
+
+    if total_bytes <= bounded_start:
+        return TextRead(
+            "",
+            False,
+            False,
+            bounded_start,
+            bounded_start,
+            total_bytes,
+            str(path),
+            message="no new output",
+        )
+
+    raw = _read_window(path, bounded_start, min(inline_budget, total_bytes - bounded_start))
+    next_offset = bounded_start + len(raw)
+    return TextRead(
+        _safe_decode(raw),
+        next_offset < total_bytes,
+        next_offset < total_bytes,
+        bounded_start,
+        next_offset,
+        total_bytes,
+        str(path),
+    )
 
 
 def _trim_to_line_boundaries(
@@ -377,7 +581,7 @@ def build_output_preview(
     section_budget: Optional[int] = None,
 ) -> OutputPreview:
     inline_budget = inline_budget or config.inline_output_char_budget
-    section_budget = section_budget or config.preview_section_char_budget
+    section_budget = section_budget or max(256, inline_budget // 4)
 
     if not path.exists():
         return OutputPreview(
@@ -798,6 +1002,152 @@ class CommandJobManager:
 
 
 command_job_manager = CommandJobManager()
+
+
+class ShellSessionManager:
+    def __init__(self) -> None:
+        self._sessions: Dict[str, RunningSession] = {}
+
+    def _session_paths(self, session_id: str) -> Tuple[Path, Path]:
+        output_path = config.sessions_dir / f"{session_id}.output.log"
+        meta_path = config.sessions_dir / f"{session_id}.json"
+        return output_path, meta_path
+
+    def _persist_snapshot(self, snapshot: SessionSnapshot) -> None:
+        _, meta_path = self._session_paths(snapshot.session_id)
+        meta_path.write_text(json.dumps(snapshot.to_dict(), ensure_ascii=True, indent=2), encoding="utf-8")
+
+    async def open_session(
+        self,
+        args: List[str],
+        env: Optional[dict] = None,
+        cwd: Optional[str] = None,
+        backend: Optional[str] = None,
+    ) -> SessionSnapshot:
+        config.setup_dirs()
+        session_id = uuid.uuid4().hex[:12]
+        output_path, _ = self._session_paths(session_id)
+        started_at = time.time()
+        master_fd, slave_fd = pty.openpty()
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                env=env,
+                cwd=cwd,
+            )
+        finally:
+            _close_fd(slave_fd)
+
+        output_stats = StreamStats()
+        read_task = asyncio.create_task(_stream_pty_to_file(master_fd, output_path, output_stats))
+
+        session = RunningSession(
+            session_id=session_id,
+            process=process,
+            master_fd=master_fd,
+            output_path=output_path,
+            read_task=read_task,
+            output_stats=output_stats,
+            started_at=started_at,
+            backend=backend,
+            cwd=cwd,
+            owner_id=SERVER_INSTANCE_ID,
+        )
+        self._sessions[session_id] = session
+
+        snapshot = session.snapshot()
+        self._persist_snapshot(snapshot)
+        return snapshot
+
+    async def _finalize_if_done(self, session: RunningSession) -> SessionSnapshot:
+        if session.status in TERMINAL_SESSION_STATES:
+            snapshot = session.snapshot()
+            self._persist_snapshot(snapshot)
+            return snapshot
+
+        if session.process.returncode is None:
+            try:
+                await asyncio.wait_for(session.process.wait(), timeout=0)
+            except asyncio.TimeoutError:
+                snapshot = session.snapshot()
+                self._persist_snapshot(snapshot)
+                return snapshot
+
+        await session.read_task
+        _close_fd(session.master_fd)
+        session.exit_code = session.process.returncode or 0
+        session.completed_at = time.time()
+        session.status = "closed"
+        snapshot = session.snapshot()
+        self._persist_snapshot(snapshot)
+        return snapshot
+
+    async def get_snapshot(self, session_id: str) -> SessionSnapshot:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            return await self._finalize_if_done(session)
+
+        _, meta_path = self._session_paths(session_id)
+        if not meta_path.exists():
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "unknown session_id",
+                {"session_id": session_id},
+                retryable=False,
+                suggested_next_action="Use an existing session_id or open a new session.",
+            )
+
+        snapshot = SessionSnapshot(**json.loads(meta_path.read_text(encoding="utf-8")))
+        if snapshot.status == "running" and snapshot.owner_id != SERVER_INSTANCE_ID:
+            snapshot.status = "lost"
+            snapshot.completed_at = snapshot.completed_at or time.time()
+            snapshot.duration_ms = int((snapshot.completed_at - snapshot.started_at) * 1000)
+            self._persist_snapshot(snapshot)
+        return snapshot
+
+    async def write(self, session_id: str, data: str) -> SessionSnapshot:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return await self.get_snapshot(session_id)
+        if session.process.returncode is not None:
+            return await self._finalize_if_done(session)
+        os.write(session.master_fd, data.encode())
+        snapshot = session.snapshot()
+        self._persist_snapshot(snapshot)
+        return snapshot
+
+    def set_read_offset(self, session_id: str, next_offset: int) -> None:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.read_offset = max(0, next_offset)
+            self._persist_snapshot(session.snapshot())
+            return
+
+        snapshot = SessionSnapshot(**json.loads(self._session_paths(session_id)[1].read_text(encoding="utf-8")))
+        snapshot.read_offset = max(0, next_offset)
+        self._persist_snapshot(snapshot)
+
+    async def close(self, session_id: str) -> SessionSnapshot:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return await self.get_snapshot(session_id)
+
+        if session.process.returncode is None:
+            session.process.terminate()
+            try:
+                await asyncio.wait_for(session.process.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                session.process.kill()
+                await session.process.wait()
+
+        return await self._finalize_if_done(session)
+
+
+shell_session_manager = ShellSessionManager()
 
 
 def _handle_legacy_large_output(stdout: str, stderr: str, cmd_name: str) -> str:

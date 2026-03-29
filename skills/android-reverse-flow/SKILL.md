@@ -11,7 +11,7 @@ Use this skill for end-to-end Android APK reversing on the phone.
 
 - Use the MCP `shell` tool as the main control surface.
 - Keep shell output narrow. Prefer redirects, `rg`, `sed -n`, `jq`, `head`, and `tail` over dumping full trees or files.
-- For long jobs, keep using the same `job_id` and offsets instead of restarting commands.
+- For iterative work, prefer a persistent shell session over restarting one-shot commands.
 - On Android/Termux, treat plain `apktool b ...` as an anti-pattern. Always force `--aapt /data/data/com.termux/files/usr/bin/aapt2`.
 - Prefer separate working directories per APK and per iteration.
 - Treat `apktool` output as the editable source of truth for resources/manifest/smali. Treat `jadx` output as read-mostly navigation.
@@ -35,7 +35,7 @@ Use this skill for end-to-end Android APK reversing on the phone.
 - Before reading big directories, ask for counts or filtered paths.
 - Before reading large XML or smali files, pull only relevant slices with `rg -n` and `sed -n`.
 - When a build command is noisy, redirect stdout/stderr to files and inspect the tail first.
-- If a command hangs or takes time, let it run as a job and continue with offsets.
+- If a workflow becomes interactive or iterative, stay inside one shell session instead of reopening commands repeatedly.
 
 ## When to read references
 

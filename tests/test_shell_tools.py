@@ -6,8 +6,8 @@ from pathlib import Path
 from src.config import config
 from src.errors import ErrorCode, MCPError
 from src.runners import subprocess_runner
-from src.runners.subprocess_runner import JobSnapshot, build_output_preview, read_output_delta
-from src.tools.shell_tools import _next_action_hint, execute_android_shell
+from src.runners.subprocess_runner import JobSnapshot, SessionSnapshot, read_inline_text, read_text_delta
+from src.tools.shell_tools import execute_android_shell
 
 
 def _configure_runtime(tmp_path: Path) -> None:
@@ -15,120 +15,181 @@ def _configure_runtime(tmp_path: Path) -> None:
     config.logs_dir = tmp_path / "logs"
     config.runtime_dir = tmp_path / "runtime"
     config.jobs_dir = config.runtime_dir / "jobs"
+    config.sessions_dir = config.runtime_dir / "sessions"
     config.setup_dirs()
 
 
-def test_build_output_preview_samples_large_output(tmp_path):
+def test_read_inline_text_returns_full_output_when_under_budget(tmp_path):
+    _configure_runtime(tmp_path)
+    path = tmp_path / "small.txt"
+    path.write_text("hello\nworld\n", encoding="utf-8")
+
+    result = read_inline_text(path, total_bytes=path.stat().st_size, inline_budget=100)
+
+    assert result.text == "hello\nworld\n"
+    assert result.truncated is False
+
+
+def test_read_inline_text_truncates_only_over_budget(tmp_path):
     _configure_runtime(tmp_path)
     path = tmp_path / "large.txt"
-    path.write_text("A" * 600 + "B" * 600 + "C" * 600, encoding="utf-8")
+    path.write_text("A" * 5000, encoding="utf-8")
 
-    preview = build_output_preview(path, total_bytes=path.stat().st_size, inline_budget=300, section_budget=120)
+    result = read_inline_text(path, total_bytes=path.stat().st_size, inline_budget=400)
 
-    assert preview.truncated is True
-    assert preview.strategy == "head_middle_tail"
-    assert [section["position"] for section in preview.sections] == ["head", "middle", "tail"]
-    assert preview.sections[0]["text"].startswith("A")
-    assert preview.sections[-1]["text"].strip().endswith("C")
+    assert result.truncated is True
+    assert "truncated" in result.text
 
 
-def test_build_output_preview_detects_json_output(tmp_path):
+def test_read_text_delta_reports_empty_delta(tmp_path):
     _configure_runtime(tmp_path)
-    path = tmp_path / "data.json"
-    path.write_text("{\"ok\": true, \"items\": [1, 2, 3], \"name\": \"demo\"}", encoding="utf-8")
+    path = tmp_path / "delta.txt"
+    path.write_text("hello\n", encoding="utf-8")
 
-    preview = build_output_preview(path, total_bytes=path.stat().st_size, inline_budget=400, section_budget=120)
+    result = read_text_delta(path, total_bytes=path.stat().st_size, start_offset=path.stat().st_size, inline_budget=100)
 
-    assert preview.kind == "json"
-    assert preview.json_summary is not None
-    assert preview.json_summary["summary_type"] == "object"
+    assert result.text == ""
+    assert result.message == "no new output"
+    assert result.next_offset == path.stat().st_size
 
 
-def test_shell_returns_sampled_output_for_large_stdout(tmp_path):
+def test_exec_returns_raw_inline_output(tmp_path):
     _configure_runtime(tmp_path)
 
     result = asyncio.run(
         execute_android_shell(
-            command="python3 -c \"print('A' * 2500)\"",
+            action="exec",
+            command="python3 -c \"print('hello')\"",
             privilege_mode="termux",
             timeout_sec=2,
-            output_budget_chars=400,
+            output_budget_chars=200,
         )
     )
 
     data = result["data"]
     assert data["status"] == "completed"
-    assert data["finish_reason"] == "completed"
-    assert data["stdout"]["truncated"] is True
-    assert data["stdout"]["strategy"] in {"head_tail", "head_middle_tail"}
-    assert Path(data["artifacts"]["stdout_path"]).exists()
+    assert data["stdout"] == "hello\n"
+    assert data["stderr"] == ""
+    assert data["truncated"] is False
 
 
-def test_read_output_delta_reports_empty_delta(tmp_path):
-    _configure_runtime(tmp_path)
-    path = tmp_path / "delta.txt"
-    path.write_text("hello\n", encoding="utf-8")
-
-    preview = read_output_delta(path, total_bytes=path.stat().st_size, start_offset=path.stat().st_size, inline_budget=100)
-
-    assert preview.kind == "empty"
-    assert preview.message == "no new output"
-    assert preview.next_offset == path.stat().st_size
-
-
-def test_shell_continues_long_running_job_with_offsets(tmp_path):
+def test_exec_poll_returns_running_job_and_then_completion(tmp_path):
     _configure_runtime(tmp_path)
 
     started = asyncio.run(
         execute_android_shell(
-            command="python3 -c \"import time; print('start'); time.sleep(1.5); print('done')\"",
+            action="exec",
+            command="python3 -c \"import time; print('start'); time.sleep(1.0); print('done')\"",
             privilege_mode="termux",
             timeout_sec=0,
+            output_budget_chars=400,
         )
     )
 
     assert started["data"]["status"] == "running"
     job_id = started["data"]["job_id"]
 
-    asyncio.run(asyncio.sleep(2))
+    asyncio.run(asyncio.sleep(1.5))
 
     finished = asyncio.run(
         execute_android_shell(
-            continuation="continue",
+            action="poll",
             job_id=job_id,
             privilege_mode="termux",
-            from_stdout_offset=0,
+            output_budget_chars=400,
         )
     )
 
     assert finished["data"]["status"] == "completed"
-    assert finished["data"]["exit_code"] == 0
-    assert finished["data"]["stdout"]["mode"] == "delta"
-    assert "start" in (finished["data"]["stdout"]["inline"] or "")
-    assert finished["data"]["offsets"]["stdout"] >= finished["data"]["stdout"]["next_offset"]
+    assert "start" in finished["data"]["stdout"]
+    assert "done" in finished["data"]["stdout"]
 
 
-def test_shell_can_cancel_running_job(tmp_path):
+def test_open_session_write_read_close_roundtrip(tmp_path):
     _configure_runtime(tmp_path)
 
-    started = asyncio.run(
+    opened = asyncio.run(
         execute_android_shell(
-            command="python3 -c \"import time; time.sleep(10)\"",
+            action="open_session",
             privilege_mode="termux",
-            timeout_sec=0,
+            output_budget_chars=400,
         )
     )
 
-    cancelled = asyncio.run(
+    session_id = opened["data"]["session_id"]
+
+    wrote = asyncio.run(
         execute_android_shell(
-            continuation="cancel",
-            job_id=started["data"]["job_id"],
+            action="write",
+            session_id=session_id,
+            input_text="printf 'hello-session\\n'",
             privilege_mode="termux",
+            output_budget_chars=400,
         )
     )
 
-    assert cancelled["data"]["status"] == "cancelled"
-    assert cancelled["data"]["finish_reason"] == "cancelled"
+    assert "hello-session" in wrote["data"]["output"]
+
+    idle = asyncio.run(
+        execute_android_shell(
+            action="read",
+            session_id=session_id,
+            privilege_mode="termux",
+            output_budget_chars=400,
+        )
+    )
+
+    assert idle["data"]["message"] == "no new output"
+
+    closed = asyncio.run(
+        execute_android_shell(
+            action="close",
+            session_id=session_id,
+            privilege_mode="termux",
+            output_budget_chars=400,
+        )
+    )
+
+    assert closed["data"]["status"] == "closed"
+
+
+def test_auto_uses_session_for_interactive_command(tmp_path):
+    _configure_runtime(tmp_path)
+
+    result = asyncio.run(
+        execute_android_shell(
+            command="tail -f /dev/null",
+            privilege_mode="termux",
+            output_budget_chars=200,
+        )
+    )
+
+    assert "session_id" in result["data"]
+    asyncio.run(
+        execute_android_shell(
+            action="close",
+            session_id=result["data"]["session_id"],
+            privilege_mode="termux",
+            output_budget_chars=200,
+        )
+    )
+
+
+def test_explicit_rish_session_is_rejected(tmp_path):
+    _configure_runtime(tmp_path)
+
+    try:
+        asyncio.run(
+            execute_android_shell(
+                action="open_session",
+                privilege_mode="rish",
+                output_budget_chars=200,
+            )
+        )
+    except MCPError as exc:
+        assert exc.code == ErrorCode.TOOL_DISABLED
+    else:
+        raise AssertionError("Expected MCPError for rish session")
 
 
 def test_stale_job_becomes_lost_after_instance_change(tmp_path):
@@ -158,7 +219,29 @@ def test_stale_job_becomes_lost_after_instance_change(tmp_path):
 
     assert found.status == "lost"
     assert found.finish_reason == "orphaned"
-    assert found.owner_id != subprocess_runner.SERVER_INSTANCE_ID
+
+
+def test_stale_session_becomes_lost_after_instance_change(tmp_path):
+    _configure_runtime(tmp_path)
+
+    snapshot = SessionSnapshot(
+        session_id="stalesession1",
+        status="running",
+        started_at=time.time() - 10,
+        output_path=str((config.sessions_dir / "stalesession1.output.log").absolute()),
+        output_bytes=0,
+        owner_id="previous-instance",
+        pid=77777,
+        backend="termux",
+        cwd=None,
+    )
+    meta_path = config.sessions_dir / "stalesession1.json"
+    meta_path.write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
+    Path(snapshot.output_path).write_text("", encoding="utf-8")
+
+    found = asyncio.run(subprocess_runner.shell_session_manager.get_snapshot("stalesession1"))
+
+    assert found.status == "lost"
 
 
 def test_mcperror_to_dict_contains_normalized_fields():
@@ -174,36 +257,3 @@ def test_mcperror_to_dict_contains_normalized_fields():
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert payload["error"]["retryable"] is False
     assert payload["error"]["suggested_next_action"]
-
-
-def test_next_action_hint_detects_internal_apktool_aapt2_failure():
-    hint = _next_action_hint(
-        status="failed",
-        finish_reason="failed",
-        primary_stream="stderr",
-        stdout_preview={"inline": "", "total_bytes": 0},
-        stderr_preview={
-            "inline": (
-                "Execution failed: [/data/data/com.termux/files/usr/tmp/aapt2_123.tmp, compile]\n"
-                "Syntax error: \"(\" unexpected\n"
-            ),
-            "total_bytes": 120,
-        },
-    )
-
-    assert "--aapt /data/data/com.termux/files/usr/bin/aapt2" in hint
-
-
-def test_next_action_hint_detects_leading_dollar_resource_names():
-    hint = _next_action_hint(
-        status="failed",
-        finish_reason="failed",
-        primary_stream="stderr",
-        stdout_preview={"inline": "", "total_bytes": 0},
-        stderr_preview={
-            "inline": "error: resource 'drawable/$avd_hide_password__0' has invalid entry name '$avd_hide_password__0.",
-            "total_bytes": 101,
-        },
-    )
-
-    assert "leading-$ resource name" in hint

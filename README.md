@@ -5,14 +5,14 @@ An open-source Model Context Protocol (MCP) server for Android, running in Termu
 ## Features
 
 * **Streamable HTTP Transport**: Modern MCP transport for robust communication.
-* **Single Universal Shell Tool**: One MCP tool for Termux and `rish`, designed for small-context LLMs.
-* **Adaptive Output Shaping**: Large output is returned as compact JSON, line-aware, or text previews instead of giant dumps.
-* **Long-Running Job Continuations**: Commands that exceed the sync budget return a `job_id` instead of hard-failing.
-* **Incremental Output Reads**: Follow-up calls can continue from `stdout`/`stderr` byte offsets.
-* **Job Control**: Running jobs can be cancelled through the same `shell` tool.
+* **Single Universal Shell Tool**: One MCP tool for Termux and `rish`, designed to feel closer to a real terminal.
+* **Hybrid Exec + Session Model**: The same `shell` tool supports one-shot commands and persistent shell sessions.
+* **Raw Inline First**: If stdout/stderr fit the budget, they are returned whole instead of being split into preview sections.
+* **Long-Running Recovery**: One-shot commands can still be polled/cancelled when they outlive the sync budget.
+* **Interactive Session Flow**: Sessions support write/read/close on a persistent shell cursor.
 * **Shizuku Integration**: High-privilege Android commands can be routed through `rish`.
 * **Low-Context UX**: Error payloads stay short and operational for weak LLMs.
-* **Artifact Management**: Command stdout/stderr are persisted for follow-up inspection.
+* **Artifact Management**: Command/session output is persisted for follow-up inspection when needed.
 
 ## Prerequisites
 
@@ -61,7 +61,7 @@ Or connect via HTTP directly using an MCP client supporting Streamable HTTP.
 
 ## Available Tools
 
-* **Shell**: `shell` is the primary universal tool. It can start commands, continue long-running jobs via `job_id`, cancel jobs, and return compact JSON, line-aware, text, or empty-delta previews.
+* **Shell**: `shell` is the primary universal tool. It supports `exec`, `poll`, `open_session`, `write`, `read`, `close`, and `cancel`.
 * **System**: `doctor`
 * **Artifacts**: `list_artifacts`
 
@@ -73,8 +73,8 @@ Run `./setup_boot.sh` to create a Termux:Boot script. Ensure the Termux:Boot app
 
 * Bind to `127.0.0.1` unless you intentionally expose the server another way.
 * Bearer token authentication is supported and recommended.
-* The shell denylist is minimal and should not be treated as a hard security boundary.
-* The server is optimized for low-friction command execution and low-context responses, not strict shell sandboxing.
+* The shell path is permissive by design and is not a command-policy sandbox.
+* The server is optimized for low-friction command execution and low-context responses, not strict shell filtering.
 
 ## License
 

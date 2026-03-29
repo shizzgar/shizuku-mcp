@@ -6,7 +6,7 @@
 - Ask for counts before full lists.
 - Redirect noisy build output into files.
 - Read failure tails before full logs.
-- Use `job_id` and offsets for long-running tasks.
+- Prefer one persistent shell session for iterative work instead of reissuing separate commands.
 
 ## Good patterns
 

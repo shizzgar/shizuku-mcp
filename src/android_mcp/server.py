@@ -22,23 +22,31 @@ async def shell(
     privilege_mode: str = "auto",
     timeout_sec: int | None = None,
     output_budget_chars: int | None = None,
+    action: str = "auto",
     continuation: str = "start",
     job_id: str | None = None,
+    session_id: str | None = None,
     cwd: str | None = None,
+    input_text: str | None = None,
+    append_newline: bool = True,
+    from_offset: int | None = None,
     from_stdout_offset: int | None = None,
     from_stderr_offset: int | None = None,
 ) -> dict:
     """
-    Universal Android shell for tiny-context LLMs.
+    Universal Android shell with one-shot exec and persistent sessions.
 
-    Use `continuation='start'` to run a command.
-    Use `continuation='continue'` with a `job_id` to poll long-running work.
-    Use `continuation='cancel'` with a `job_id` to stop a running job.
-    `privilege_mode='auto'` chooses Termux or `rish` automatically.
+    Preferred actions:
+    - `action='exec'`: run one command
+    - `action='poll'`: inspect a running one-shot job via `job_id`
+    - `action='open_session'`: open a persistent shell session
+    - `action='write'`: send input to `session_id`
+    - `action='read'`: read new output from `session_id`
+    - `action='close'` or `action='cancel'`: stop a session or job
 
-    Large output is sampled instead of returned in full.
-    For incremental reads, pass `from_stdout_offset` and/or `from_stderr_offset`.
-    Prefer narrowing with `head`, `tail`, `sed -n`, `rg`, `jq`, or redirects.
+    `action='auto'` picks exec for ordinary commands and session mode for interactive ones.
+    If output fits the inline budget, it is returned whole instead of being split into sections.
+    Legacy `continuation=start|continue|cancel` arguments are still accepted for compatibility.
     """
     try:
         return await shell_tools.execute_android_shell(
@@ -46,9 +54,14 @@ async def shell(
             privilege_mode=privilege_mode,
             timeout_sec=timeout_sec,
             output_budget_chars=output_budget_chars,
+            action=action,
             continuation=continuation,
             job_id=job_id,
+            session_id=session_id,
             cwd=cwd,
+            input_text=input_text,
+            append_newline=append_newline,
+            from_offset=from_offset,
             from_stdout_offset=from_stdout_offset,
             from_stderr_offset=from_stderr_offset,
         )

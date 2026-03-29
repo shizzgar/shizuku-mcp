@@ -6,14 +6,13 @@
 
 1. **Localhost-by-default bind**: the server starts on `127.0.0.1` by default.
 2. **Optional bearer token**: requests can require `Authorization: Bearer <token>` when `MCP_AUTH_TOKEN` is set.
-3. **Minimal shell denylist**: a small set of obviously destructive patterns is blocked.
-4. **Environment isolation for `rish`**: `RISH_PRESERVE_ENV=0` is used for privileged shell execution.
-5. **Runtime job retention**: job files are rotated and cleaned up to reduce stale runtime buildup.
+3. **Environment isolation for `rish`**: `RISH_PRESERVE_ENV=0` is used for privileged shell execution.
+4. **Runtime retention**: job/session files are rotated and cleaned up to reduce stale runtime buildup.
 
 ## Important Non-Goals
 
 1. **No strict shell sandbox**: the universal `shell` tool is designed to stay permissive.
-2. **No strong command policy boundary**: the denylist reduces accidents, but shell access is still powerful.
+2. **No command policy boundary**: shell access is intentionally permissive and remains powerful.
 3. **No claim of browser-grade Origin protection**: do not assume cross-origin protections that are not implemented in code.
 
 ## Operational Recommendations
@@ -28,4 +27,4 @@
 
 1. A small-context LLM can still issue dangerous shell commands if prompted to do so.
 2. Anyone with local access to the Termux home directory can inspect saved artifacts and runtime job files.
-3. Shell output truncation and shaping improve usability, not security.
+3. Shell output budgeting and sessions improve usability, not security.

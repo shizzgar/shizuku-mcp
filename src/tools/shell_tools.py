@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shlex
@@ -9,12 +10,14 @@ from src.config import config
 from src.errors import MCPError, ErrorCode
 from src.runners.rish_runner import rish_runner
 from src.runners.subprocess_runner import (
-    build_output_preview,
-    command_job_manager,
-    read_output_delta,
     SERVER_INSTANCE_ID,
+    command_job_manager,
+    read_inline_text,
+    read_text_delta,
+    shell_session_manager,
 )
 
+ALLOWED_ACTIONS = {"auto", "exec", "poll", "open_session", "write", "read", "resize", "close", "cancel"}
 ALLOWED_PRIVILEGE_MODES = {"auto", "termux", "rish"}
 ALLOWED_CONTINUATIONS = {"start", "continue", "cancel"}
 
@@ -68,13 +71,6 @@ def _termux_env() -> Dict[str, str]:
     return env
 
 
-def _contains_denied_pattern(command: str) -> Optional[str]:
-    for pattern in config.denied_shell_patterns:
-        if pattern in command:
-            return pattern
-    return None
-
-
 def _requires_rish(command: str) -> bool:
     normalized = command.strip()
     return normalized.startswith(RISH_REQUIRED_PREFIXES)
@@ -87,25 +83,20 @@ def _command_seems_interactive(command: str) -> bool:
         r"\blogcat\b",
         r"(^|\s)top(\s|$)",
         r"\bwatch\s+",
+        r"(^|\s)(bash|sh|zsh|fish)(\s|$)",
+        r"\bpython3?\s*$",
+        r"\bnode\s*$",
     )
     return any(re.search(pattern, normalized) for pattern in patterns)
 
 
-async def _resolve_execution_backend(
+async def _resolve_exec_backend(
     command: str,
     privilege_mode: str,
     cwd: Optional[str],
 ) -> Tuple[str, list[str], Dict[str, str], Optional[str]]:
     if not config.enable_raw_shell:
         raise MCPError(ErrorCode.TOOL_DISABLED, "Raw shell is disabled in configuration.")
-
-    denied_pattern = _contains_denied_pattern(command)
-    if denied_pattern:
-        raise MCPError(
-            ErrorCode.TOOL_DISABLED,
-            "Command contains an explicitly denied pattern.",
-            {"pattern": denied_pattern},
-        )
 
     if privilege_mode == "auto":
         selected_mode = "rish" if _requires_rish(command) else "termux"
@@ -127,111 +118,176 @@ async def _resolve_execution_backend(
     return "rish", [rish_path, "-c", remote_command], env, None
 
 
-def _next_action_hint(
-    status: str,
-    finish_reason: Optional[str],
-    primary_stream: str,
-    stdout_preview: Dict[str, Any],
-    stderr_preview: Dict[str, Any],
-) -> str:
-    def preview_text(preview: Dict[str, Any]) -> str:
-        chunks: list[str] = []
-        inline = preview.get("inline")
-        if isinstance(inline, str) and inline:
-            chunks.append(inline)
-        for key in ("first_lines", "sample_lines", "last_lines"):
-            value = preview.get(key)
-            if isinstance(value, list):
-                chunks.extend(line for line in value if isinstance(line, str) and line)
-        sections = preview.get("sections")
-        if isinstance(sections, list):
-            for section in sections:
-                if isinstance(section, dict):
-                    text = section.get("text")
-                    if isinstance(text, str) and text:
-                        chunks.append(text)
-        return "\n".join(chunks)
+async def _resolve_session_backend(
+    privilege_mode: str,
+    cwd: Optional[str],
+) -> Tuple[str, list[str], Dict[str, str], Optional[str]]:
+    if not config.enable_raw_shell:
+        raise MCPError(ErrorCode.TOOL_DISABLED, "Raw shell is disabled in configuration.")
 
-    stderr_text = preview_text(stderr_preview)
-    combined_text = "\n".join(part for part in (stderr_text, preview_text(stdout_preview)) if part)
+    selected_mode = privilege_mode
+    if selected_mode == "auto":
+        selected_mode = "termux"
 
+    if selected_mode == "rish":
+        raise MCPError(
+            ErrorCode.TOOL_DISABLED,
+            "Persistent rish sessions are not supported.",
+            retryable=False,
+            suggested_next_action="Use action='exec' with privilege_mode='rish', or open a termux session instead.",
+        )
+
+    shell_path = _termux_shell_path()
+    return "termux", [shell_path, "-li"], _termux_env(), cwd
+
+
+def _signature_hint(text: str) -> Optional[str]:
+    if "Syntax error: \"(\" unexpected" in text and "aapt2_" in text:
+        return "apktool used its temp aapt2 binary. Retry with --aapt /data/data/com.termux/files/usr/bin/aapt2."
+    if "invalid entry name '$" in text:
+        return "aapt2 rejected a leading-$ resource name. Fix filenames and @drawable/$... refs before rebuilding."
+    return None
+
+
+def _exec_hint(status: str, stderr_text: str, stdout_text: str) -> Optional[str]:
+    combined = "\n".join(part for part in (stderr_text, stdout_text) if part)
+    signature = _signature_hint(combined)
+    if signature:
+        return signature
     if status == "running":
-        return "Command is still running. Call shell again with continuation='continue' and the same job_id."
-
-    if status == "lost":
-        return "This job was started by a previous server instance and can no longer be controlled. Start the command again."
-
-    if status == "cancelled":
-        return "Command was cancelled. Start a new job if you still need this work."
-
+        return "Command is still running. Poll it with the same job_id or cancel it."
     if status == "killed_by_timeout":
-        return "Command exceeded the hard timeout and was killed. Narrow the command or increase the server timeout budget."
-
-    if "Syntax error: \"(\" unexpected" in combined_text and "aapt2_" in combined_text:
-        return (
-            "apktool appears to be using its internal temp aapt2 binary. Retry with "
-            "--aapt /data/data/com.termux/files/usr/bin/aapt2."
-        )
-
-    if "invalid entry name '$" in combined_text:
-        return (
-            "aapt2 rejected a leading-$ resource name. Check res/ filenames starting with '$' "
-            "and XML refs like @drawable/$... before rebuilding."
-        )
-
-    if finish_reason == "failed":
-        return "Command exited with a non-zero code. Inspect stderr or rerun a narrower diagnostic command."
-
-    if primary_stream == "stderr" and stderr_preview.get("total_bytes", 0) > 0:
-        return "stderr contains the useful output. Inspect stderr before rerunning the command."
-
-    if stdout_preview.get("kind") == "empty" and stderr_preview.get("kind") == "empty":
-        return "No new output since the provided offsets. Poll again later or inspect saved artifacts."
-
-    if stdout_preview.get("truncated") or stderr_preview.get("truncated"):
-        stdout_path = stdout_preview.get("path")
-        return (
-            "Output was sampled to protect context. Inspect narrower slices with the same shell tool, "
-            f"for example: head/tail/sed -n/rg/jq against {stdout_path}."
-        )
-
-    return "Command completed within the inline budget."
+        return "Command hit the hard timeout. Poll artifacts or rerun it in a narrower form."
+    if status == "lost":
+        return "This job belonged to a previous server instance. Start it again."
+    if status == "failed" and stderr_text:
+        return "Command failed. Inspect stderr first."
+    return None
 
 
-def _stream_payload(
-    path: Path,
-    total_bytes: int,
+def _session_hint(output_text: str) -> Optional[str]:
+    return _signature_hint(output_text)
+
+
+def _action_from_legacy(
+    action: str,
+    continuation: str,
+    job_id: Optional[str],
+    from_stdout_offset: Optional[int],
+    from_stderr_offset: Optional[int],
+) -> str:
+    if action != "auto":
+        return action
+    if continuation == "continue" or job_id or from_stdout_offset is not None or from_stderr_offset is not None:
+        return "poll"
+    if continuation == "cancel":
+        return "cancel"
+    return "auto"
+
+
+def _build_exec_payload(snapshot: Any, output_budget_chars: Optional[int], delta: bool = False,
+                        from_stdout_offset: Optional[int] = None, from_stderr_offset: Optional[int] = None) -> Dict[str, Any]:
+    if delta:
+        stdout_start = from_stdout_offset if from_stdout_offset is not None else snapshot.stdout_bytes
+        stderr_start = from_stderr_offset if from_stderr_offset is not None else snapshot.stderr_bytes
+        stdout = read_text_delta(Path(snapshot.stdout_path), snapshot.stdout_bytes, stdout_start, output_budget_chars)
+        stderr = read_text_delta(Path(snapshot.stderr_path), snapshot.stderr_bytes, stderr_start, output_budget_chars)
+    else:
+        stdout = read_inline_text(Path(snapshot.stdout_path), snapshot.stdout_bytes, output_budget_chars, prefer_tail=False)
+        stderr = read_inline_text(Path(snapshot.stderr_path), snapshot.stderr_bytes, output_budget_chars, prefer_tail=True)
+
+    hint = _exec_hint(snapshot.status, stderr.text, stdout.text)
+    data: Dict[str, Any] = {
+        "job_id": snapshot.job_id,
+        "status": snapshot.status,
+        "exit_code": snapshot.exit_code,
+        "finish_reason": snapshot.finish_reason,
+        "backend": snapshot.backend,
+        "cwd": snapshot.cwd,
+        "pid": snapshot.pid,
+        "duration_ms": snapshot.duration_ms,
+        "stdout": stdout.text,
+        "stderr": stderr.text,
+        "stdout_truncated": stdout.truncated,
+        "stderr_truncated": stderr.truncated,
+        "truncated": stdout.truncated or stderr.truncated,
+        "has_more": snapshot.status == "running" or stdout.has_more or stderr.has_more,
+        "stdout_offset": snapshot.stdout_bytes,
+        "stderr_offset": snapshot.stderr_bytes,
+    }
+    if data["truncated"] or snapshot.status == "running":
+        data["stdout_path"] = snapshot.stdout_path
+        data["stderr_path"] = snapshot.stderr_path
+    if hint:
+        data["next_action_hint"] = hint
+    return data
+
+
+def _build_session_read_payload(
+    snapshot: Any,
     output_budget_chars: Optional[int],
-    from_offset: Optional[int],
+    from_offset: Optional[int] = None,
 ) -> Dict[str, Any]:
-    if from_offset is None:
-        return build_output_preview(
-            path=path,
-            total_bytes=total_bytes,
-            inline_budget=output_budget_chars,
-        ).to_dict()
+    start_offset = snapshot.read_offset if from_offset is None else from_offset
+    output = read_text_delta(Path(snapshot.output_path), snapshot.output_bytes, start_offset, output_budget_chars)
+    shell_session_manager.set_read_offset(snapshot.session_id, output.next_offset)
+    hint = _session_hint(output.text)
+    data: Dict[str, Any] = {
+        "session_id": snapshot.session_id,
+        "status": snapshot.status,
+        "backend": snapshot.backend,
+        "cwd": snapshot.cwd,
+        "pid": snapshot.pid,
+        "exit_code": snapshot.exit_code,
+        "duration_ms": snapshot.duration_ms,
+        "output": output.text,
+        "truncated": output.truncated,
+        "has_more": output.has_more,
+        "offset": output.next_offset,
+        "output_path": snapshot.output_path,
+    }
+    if output.message:
+        data["message"] = output.message
+    if hint:
+        data["next_action_hint"] = hint
+    return data
 
-    return read_output_delta(
-        path=path,
-        total_bytes=total_bytes,
-        start_offset=from_offset,
-        inline_budget=output_budget_chars,
-    ).to_dict()
 
+async def _open_session_response(
+    privilege_mode: str,
+    cwd: Optional[str],
+    command: Optional[str],
+    output_budget_chars: Optional[int],
+) -> Dict[str, Any]:
+    selected_backend, args, env, resolved_cwd = await _resolve_session_backend(
+        privilege_mode=privilege_mode,
+        cwd=cwd,
+    )
+    snapshot = await shell_session_manager.open_session(
+        args=args,
+        env=env,
+        cwd=resolved_cwd,
+        backend=selected_backend,
+    )
 
-def _primary_stream(stdout_preview: Dict[str, Any], stderr_preview: Dict[str, Any], finish_reason: Optional[str]) -> str:
-    stdout_bytes = stdout_preview.get("total_bytes", 0)
-    stderr_bytes = stderr_preview.get("total_bytes", 0)
+    if command and command.strip():
+        input_text = command if command.endswith("\n") else f"{command}\n"
+        before_offset = snapshot.output_bytes
+        await shell_session_manager.write(snapshot.session_id, input_text)
+        await asyncio.sleep(config.session_open_wait_ms / 1000)
+        snapshot = await shell_session_manager.get_snapshot(snapshot.session_id)
+        data = _build_session_read_payload(snapshot, output_budget_chars, from_offset=before_offset)
+    else:
+        await asyncio.sleep(config.session_open_wait_ms / 1000)
+        snapshot = await shell_session_manager.get_snapshot(snapshot.session_id)
+        data = _build_session_read_payload(snapshot, output_budget_chars, from_offset=0)
 
-    if stderr_bytes == 0 and stdout_bytes == 0:
-        return "none"
-    if stderr_bytes > 0 and stdout_bytes == 0:
-        return "stderr"
-    if finish_reason in {"failed", "killed_by_timeout"} and stderr_bytes > 0:
-        return "stderr"
-    if stderr_preview.get("kind") == "json" and stdout_preview.get("kind") != "json":
-        return "stderr"
-    return "stdout"
+    data.update({
+        "session_id": snapshot.session_id,
+        "backend": snapshot.backend,
+        "cwd": snapshot.cwd,
+    })
+    return {"ok": True, "data": data}
 
 
 async def execute_android_shell(
@@ -239,38 +295,42 @@ async def execute_android_shell(
     privilege_mode: str = "auto",
     timeout_sec: Optional[int] = None,
     output_budget_chars: Optional[int] = None,
+    action: str = "auto",
     continuation: str = "start",
     job_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     cwd: Optional[str] = None,
+    input_text: Optional[str] = None,
+    append_newline: bool = True,
+    from_offset: Optional[int] = None,
     from_stdout_offset: Optional[int] = None,
     from_stderr_offset: Optional[int] = None,
 ) -> Dict[str, Any]:
+    _validate_mode(action, ALLOWED_ACTIONS, "action")
     _validate_mode(privilege_mode, ALLOWED_PRIVILEGE_MODES, "privilege_mode")
     _validate_mode(continuation, ALLOWED_CONTINUATIONS, "continuation")
     if timeout_sec is not None and timeout_sec < 0:
         raise MCPError(ErrorCode.INVALID_ARGUMENT, "timeout_sec must be >= 0")
     if output_budget_chars is not None and output_budget_chars <= 0:
         raise MCPError(ErrorCode.INVALID_ARGUMENT, "output_budget_chars must be > 0")
+    if from_offset is not None and from_offset < 0:
+        raise MCPError(ErrorCode.INVALID_ARGUMENT, "from_offset must be >= 0")
     if from_stdout_offset is not None and from_stdout_offset < 0:
         raise MCPError(ErrorCode.INVALID_ARGUMENT, "from_stdout_offset must be >= 0")
     if from_stderr_offset is not None and from_stderr_offset < 0:
         raise MCPError(ErrorCode.INVALID_ARGUMENT, "from_stderr_offset must be >= 0")
 
-    if continuation in {"continue", "cancel"}:
-        if not job_id:
-            raise MCPError(
-                ErrorCode.INVALID_ARGUMENT,
-                f"job_id is required when continuation='{continuation}'",
-            )
-        if continuation == "cancel":
-            snapshot = await command_job_manager.terminate(job_id, reason="cancelled")
-        else:
-            snapshot = await command_job_manager.get_snapshot(job_id)
-    else:
+    action = _action_from_legacy(action, continuation, job_id, from_stdout_offset, from_stderr_offset)
+
+    if action == "auto":
         if not command or not command.strip():
             raise MCPError(ErrorCode.INVALID_ARGUMENT, "command must be provided")
+        action = "open_session" if _command_seems_interactive(command) else "exec"
 
-        selected_backend, args, env, resolved_cwd = await _resolve_execution_backend(
+    if action == "exec":
+        if not command or not command.strip():
+            raise MCPError(ErrorCode.INVALID_ARGUMENT, "command must be provided")
+        selected_backend, args, env, resolved_cwd = await _resolve_exec_backend(
             command=command,
             privilege_mode=privilege_mode,
             cwd=cwd,
@@ -282,55 +342,133 @@ async def execute_android_shell(
             cwd=resolved_cwd,
             backend=selected_backend,
         )
-
         sync_budget = timeout_sec if timeout_sec is not None else config.sync_command_budget_sec
-        if _command_seems_interactive(command):
-            sync_budget = min(sync_budget, 1)
         if sync_budget > 0:
             snapshot = await command_job_manager.wait_for(snapshot.job_id, sync_budget)
+        return {"ok": True, "data": _build_exec_payload(snapshot, output_budget_chars)}
 
-    stdout_preview = _stream_payload(
-        path=Path(snapshot.stdout_path),
-        total_bytes=snapshot.stdout_bytes,
-        output_budget_chars=output_budget_chars,
-        from_offset=from_stdout_offset,
-    )
-    stderr_preview = _stream_payload(
-        path=Path(snapshot.stderr_path),
-        total_bytes=snapshot.stderr_bytes,
-        output_budget_chars=output_budget_chars,
-        from_offset=from_stderr_offset,
-    )
+    if action == "poll":
+        if not job_id:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "job_id is required for action='poll'",
+                retryable=False,
+                suggested_next_action="Pass an existing job_id from a previous exec call.",
+            )
+        snapshot = await command_job_manager.get_snapshot(job_id)
+        return {
+            "ok": True,
+            "data": _build_exec_payload(
+                snapshot,
+                output_budget_chars,
+                delta=(from_stdout_offset is not None or from_stderr_offset is not None),
+                from_stdout_offset=from_stdout_offset,
+                from_stderr_offset=from_stderr_offset,
+            ),
+        }
 
-    primary_stream = _primary_stream(stdout_preview, stderr_preview, snapshot.finish_reason)
-    job_state = "active" if snapshot.status == "running" and snapshot.owner_id == SERVER_INSTANCE_ID else "stale" if snapshot.status == "lost" else "terminal"
+    if action == "open_session":
+        return await _open_session_response(privilege_mode, cwd, command, output_budget_chars)
 
-    return {
-        "ok": True,
-        "data": {
-            "job_id": snapshot.job_id,
+    if action == "write":
+        if not session_id:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "session_id is required for action='write'",
+                retryable=False,
+                suggested_next_action="Open a session first, then write to it.",
+            )
+        payload = input_text if input_text is not None else command
+        if payload is None:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "input_text or command is required for action='write'",
+                retryable=False,
+                suggested_next_action="Pass the text you want to send to the session.",
+            )
+        snapshot_before = await shell_session_manager.get_snapshot(session_id)
+        if snapshot_before.status != "running":
+            return {"ok": True, "data": _build_session_read_payload(snapshot_before, output_budget_chars, from_offset=from_offset)}
+        data = payload if not append_newline else (payload if payload.endswith("\n") else f"{payload}\n")
+        await shell_session_manager.write(session_id, data)
+        await asyncio.sleep(config.session_open_wait_ms / 1000)
+        snapshot_after = await shell_session_manager.get_snapshot(session_id)
+        return {
+            "ok": True,
+            "data": _build_session_read_payload(snapshot_after, output_budget_chars, from_offset=snapshot_before.output_bytes),
+        }
+
+    if action == "read":
+        if not session_id:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "session_id is required for action='read'",
+                retryable=False,
+                suggested_next_action="Open a session first, then read from it.",
+            )
+        snapshot = await shell_session_manager.get_snapshot(session_id)
+        return {"ok": True, "data": _build_session_read_payload(snapshot, output_budget_chars, from_offset=from_offset)}
+
+    if action == "close":
+        if not session_id:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "session_id is required for action='close'",
+                retryable=False,
+                suggested_next_action="Pass the session_id you want to close.",
+            )
+        snapshot = await shell_session_manager.close(session_id)
+        output = read_inline_text(Path(snapshot.output_path), snapshot.output_bytes, output_budget_chars)
+        data: Dict[str, Any] = {
+            "session_id": snapshot.session_id,
             "status": snapshot.status,
-            "finish_reason": snapshot.finish_reason,
-            "job_state": job_state,
-            "job_owner": snapshot.owner_id,
-            "server_instance_id": SERVER_INSTANCE_ID,
-            "command": snapshot.command,
             "backend": snapshot.backend,
             "cwd": snapshot.cwd,
             "pid": snapshot.pid,
             "exit_code": snapshot.exit_code,
             "duration_ms": snapshot.duration_ms,
-            "primary_stream": primary_stream,
-            "stdout": stdout_preview,
-            "stderr": stderr_preview,
-            "offsets": {
-                "stdout": snapshot.stdout_bytes,
-                "stderr": snapshot.stderr_bytes,
-            },
-            "artifacts": {
-                "stdout_path": snapshot.stdout_path,
-                "stderr_path": snapshot.stderr_path,
-            },
-            "next_action_hint": _next_action_hint(snapshot.status, snapshot.finish_reason, primary_stream, stdout_preview, stderr_preview),
-        },
-    }
+            "output": output.text,
+            "truncated": output.truncated,
+            "has_more": False,
+            "offset": snapshot.read_offset,
+            "output_path": snapshot.output_path,
+        }
+        hint = _session_hint(output.text)
+        if hint:
+            data["next_action_hint"] = hint
+        return {"ok": True, "data": data}
+
+    if action == "cancel":
+        if session_id:
+            snapshot = await shell_session_manager.close(session_id)
+            return {
+                "ok": True,
+                "data": {
+                    "session_id": snapshot.session_id,
+                    "status": snapshot.status,
+                    "backend": snapshot.backend,
+                    "cwd": snapshot.cwd,
+                    "exit_code": snapshot.exit_code,
+                    "duration_ms": snapshot.duration_ms,
+                    "output_path": snapshot.output_path,
+                },
+            }
+        if not job_id:
+            raise MCPError(
+                ErrorCode.INVALID_ARGUMENT,
+                "job_id or session_id is required for action='cancel'",
+                retryable=False,
+                suggested_next_action="Pass a running job_id or session_id to cancel.",
+            )
+        snapshot = await command_job_manager.terminate(job_id, reason="cancelled")
+        return {"ok": True, "data": _build_exec_payload(snapshot, output_budget_chars)}
+
+    if action == "resize":
+        raise MCPError(
+            ErrorCode.TOOL_DISABLED,
+            "PTY resize is not implemented yet.",
+            retryable=False,
+            suggested_next_action="Use open_session, write, read, close, or exec.",
+        )
+
+    raise MCPError(ErrorCode.INVALID_ARGUMENT, "unsupported shell action")

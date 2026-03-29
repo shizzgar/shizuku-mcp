@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class ServerConfig(BaseSettings):
@@ -14,42 +14,20 @@ class ServerConfig(BaseSettings):
     logs_dir: Path = Path("logs")
     runtime_dir: Path = Path("runtime")
     jobs_dir: Path = Path("runtime/jobs")
+    sessions_dir: Path = Path("runtime/sessions")
     
     # Security & Features
     enable_raw_shell: bool = True
     max_command_timeout_sec: int = 30 # Legacy cap for non-shell tools
     sync_command_budget_sec: int = 20
     hard_kill_timeout_sec: int = 600
-    inline_output_char_budget: int = 2000
-    preview_section_char_budget: int = 300
+    inline_output_char_budget: int = 12000
     max_completed_jobs: int = 50
     max_job_age_sec: int = 86400
     max_runtime_storage_bytes: int = 50 * 1024 * 1024
+    session_open_wait_ms: int = 120
     allow_package_force_stop: bool = True
     allow_screenrecord: bool = True
-    
-    # Shell filters
-    # Теперь можно переопределить через MCP_ALLOWED_SHELL_PATTERNS="ls,top,df"
-    allowed_shell_patterns: List[str] = [
-        r"^pm list packages",
-        r"^getprop",
-        r"^settings get",
-        r"^dumpsys",
-        r"^cmd package resolve-activity",
-        r"^ls",
-        r"^cat",
-        r"^df",
-        r"^uptime",
-        r"^uname"
-    ]
-    
-    denied_shell_patterns: List[str] = [
-        "rm -rf /",
-        "su",
-        "sudo",
-        "reboot",
-        "svc power shutdown"
-    ]
     
     # rish settings
     rish_path: Optional[str] = None
@@ -62,5 +40,6 @@ class ServerConfig(BaseSettings):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
 config = ServerConfig()
